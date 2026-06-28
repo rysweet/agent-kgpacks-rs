@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/rysweet/agent-kgpacks-rs"
+authors = ["rysweet"]
+
+[workspace.dependencies]
+# Internal crates (mirroring the agent-kgpacks-ts package decomposition).
+kgpacks-db = { path = "crates/kgpacks-db" }
+kgpacks-embeddings = { path = "crates/kgpacks-embeddings" }
+kgpacks-packs = { path = "crates/kgpacks-packs" }
+kgpacks-agent = { path = "crates/kgpacks-agent" }
+kgpacks-query = { path = "crates/kgpacks-query" }
+kgpacks-ingestion = { path = "crates/kgpacks-ingestion" }
+kgpacks-eval = { path = "crates/kgpacks-eval" }
+kgpacks-mcp = { path = "crates/kgpacks-mcp" }
+kgpacks-backend = { path = "crates/kgpacks-backend" }
+kgpacks-cli = { path = "crates/kgpacks-cli" }
+
+# Upstream Simard Rust stack. Declared at the workspace level so member crates
+# can opt in (`<dep>.workspace = true`) as real wiring lands in M2-M5. Pins match
+# the Simard workspace. M1 ships stubs and does not yet consume these, so they
+# are not fetched or compiled by the M1 build.
+#
+#   * lbug              -> LadybugDB graph + vector + FTS engine (M2/M4)
+#   * rustyclawd-core   -> Copilot SDK / agent runtime integration (M5)
+#   * rustyclawd-tools  -> Copilot SDK tool surface (M5)
+#   * amplihack-memory  -> lbug-backed GraphStore helpers (M2)
+lbug = "=0.15.3"
+rustyclawd-core = { git = "https://github.com/rysweet/RustyClawd.git", rev = "43ebaa1c1b18a5630c53f0519989a2bacd42ef62" }
+rustyclawd-tools = { git = "https://github.com/rysweet/RustyClawd.git", rev = "43ebaa1c1b18a5630c53f0519989a2bacd42ef62" }
+amplihack-memory = { git = "https://github.com/rysweet/amplihack-memory-lib.git", rev = "7b81590896f3a93399d3d29f2ada2601971c6864", features = ["persistent"] }

@@ -1,0 +1,10 @@
+[package]
+name = "kgpacks-embeddings"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Text embeddings (HuggingFace-transformers parity) for agent-kgpacks-rs."
+
+[dependencies]

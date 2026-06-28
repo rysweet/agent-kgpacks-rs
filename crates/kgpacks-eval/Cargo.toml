@@ -1,0 +1,17 @@
+[package]
+name = "kgpacks-eval"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Evaluation harness (baselines, judge, metrics) for agent-kgpacks-rs."
+
+[dependencies]
+kgpacks-query = { workspace = true }
+kgpacks-agent = { workspace = true }
+kgpacks-packs = { workspace = true }
+
+[dev-dependencies]
+kgpacks-db = { workspace = true }
+kgpacks-embeddings = { workspace = true }

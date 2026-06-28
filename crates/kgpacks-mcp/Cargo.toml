@@ -1,0 +1,13 @@
+[package]
+name = "kgpacks-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Model Context Protocol server exposing pack queries for agent-kgpacks-rs."
+
+[dependencies]
+kgpacks-db = { workspace = true }
+kgpacks-packs = { workspace = true }
+kgpacks-query = { workspace = true }

@@ -1,0 +1,10 @@
+[package]
+name = "kgpacks-packs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Knowledge-pack manifests, registry and install for agent-kgpacks-rs."
+
+[dependencies]

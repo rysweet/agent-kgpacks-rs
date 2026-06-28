@@ -1,0 +1,13 @@
+[package]
+name = "kgpacks-ingestion"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Fetch/chunk/extract/embed ingestion pipeline for agent-kgpacks-rs."
+
+[dependencies]
+kgpacks-db = { workspace = true }
+kgpacks-embeddings = { workspace = true }
+kgpacks-agent = { workspace = true }
