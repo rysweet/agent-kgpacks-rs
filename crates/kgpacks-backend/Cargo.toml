@@ -1,0 +1,14 @@
+[package]
+name = "kgpacks-backend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "HTTP API surface (query/SSE) for agent-kgpacks-rs."
+
+[dependencies]
+kgpacks-agent = { workspace = true }
+kgpacks-db = { workspace = true }
+kgpacks-embeddings = { workspace = true }
+kgpacks-query = { workspace = true }

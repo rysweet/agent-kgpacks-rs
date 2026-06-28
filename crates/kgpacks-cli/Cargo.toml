@@ -1,0 +1,21 @@
+[package]
+name = "kgpacks-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Command-line interface for agent-kgpacks-rs."
+
+[dependencies]
+kgpacks-agent = { workspace = true }
+kgpacks-db = { workspace = true }
+kgpacks-embeddings = { workspace = true }
+kgpacks-eval = { workspace = true }
+kgpacks-ingestion = { workspace = true }
+kgpacks-packs = { workspace = true }
+kgpacks-query = { workspace = true }
+
+[[bin]]
+name = "kgpacks"
+path = "src/main.rs"

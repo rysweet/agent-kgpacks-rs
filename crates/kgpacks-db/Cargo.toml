@@ -1,0 +1,10 @@
+[package]
+name = "kgpacks-db"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Graph + vector + FTS store (LadybugDB-backed) for agent-kgpacks-rs."
+
+[dependencies]
