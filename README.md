@@ -10,8 +10,9 @@ workspace). This repository mirrors that module decomposition as a **Cargo
 workspace** and reuses the Simard Rust stack (`lbug` for the graph + vector/FTS
 engine, RustyClawd / Copilot SDK for the agent).
 
-> **Status:** M1 — workspace scaffold. Crates are stubs that compile, test green,
-> and define the public surface each milestone fills in. See the
+> **Status:** M2 — graph store + schema parity. `kgpacks-db` is wired to
+> LadybugDB (`lbug`) and `kgpacks-packs` builds/loads a pack over the graph
+> store. The remaining crates are compiling stubs. See the
 > [roadmap](#porting-roadmap-m1m5) for what lands when.
 
 ## Target flow
@@ -59,21 +60,28 @@ harness against the Python/TS oracle) are tracked for a later milestone.
 
 The workspace declares the Simard Rust stack as `[workspace.dependencies]` so member
 crates opt in (`<dep>.workspace = true`) as real wiring lands. Pins match the Simard
-workspace; M1 ships stubs and does not yet consume them.
+workspace. As of M2, `kgpacks-db` consumes `lbug`; the others remain stubs.
 
-| Dependency                    | Source                                  | Used by (planned)                 |
+| Dependency                    | Source                                  | Used by                           |
 | ----------------------------- | --------------------------------------- | --------------------------------- |
-| `lbug = 0.15.3`               | crates.io                               | `kgpacks-db` graph + vector + FTS |
+| `lbug = 0.15.3`               | crates.io                               | `kgpacks-db` graph (vector/FTS M4)|
 | `amplihack-memory`            | `rysweet/amplihack-memory-lib` (git)    | `kgpacks-db` graph-store helpers  |
 | `rustyclawd-core` / `-tools`  | `rysweet/RustyClawd` (git)              | `kgpacks-agent` Copilot SDK       |
+
+> **Build requirement:** `lbug` compiles LadybugDB's bundled C++ engine from
+> source, so a C++ toolchain and **CMake** must be on `PATH` (`cmake`,
+> `build-essential` on Debian/Ubuntu).
 
 ## Porting roadmap (M1–M5)
 
 - **M1 — Scaffold (this milestone).** Cargo workspace mirroring the TS packages,
   SHA-pinned CI (`build`, `test`, `fmt`, `clippy`), this roadmap, and a passing
   smoke test per crate. Crates are compiling stubs.
-- **M2 — Graph store + schema parity.** Wire `kgpacks-db` to LadybugDB via `lbug`;
-  port the node/edge schema and migrations from `@kgpacks/db`.
+- **M2 — Graph store + schema parity (landed).** `kgpacks-db` wraps LadybugDB
+  via `lbug` (`Database` / `Connection` / `DatabaseOptions`, bound-parameter
+  Cypher, extension loading, idempotent close), and `kgpacks-packs` ports the
+  manifest schema + SemVer versioning and builds/loads a pack over the graph
+  store. Vector/FTS indexing is deferred to M4.
 - **M3 — Ingestion + embeddings.** Implement `kgpacks-ingestion` (fetch, chunk,
   extract, expand) and real embeddings in `kgpacks-embeddings`.
 - **M4 — Hybrid retrieval.** Implement `kgpacks-query` vector + FTS retrieval,
@@ -84,7 +92,9 @@ workspace; M1 ships stubs and does not yet consume them.
 
 ## Build and test
 
-Requires a stable Rust toolchain (`rustup`, with `rustfmt` and `clippy`).
+Requires a stable Rust toolchain (`rustup`, with `rustfmt` and `clippy`) and a
+C++ toolchain + **CMake** (for the bundled LadybugDB engine; on Debian/Ubuntu:
+`sudo apt-get install -y cmake build-essential`).
 
 ```bash
 cargo build --workspace --all-targets   # compile every crate and target
@@ -102,6 +112,45 @@ cargo run --bin kgpacks -- demo
 
 CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the same four gates
 on every push and pull request, with all GitHub Actions pinned to commit SHAs.
+
+## Graph store + packs (M2)
+
+`kgpacks-db` exposes a thin, safe wrapper over LadybugDB; parameters are always
+**bound** by the driver (never interpolated into the query text):
+
+```rust
+use kgpacks_db::{Database, Value};
+
+let db = Database::in_memory()?;
+let conn = db.connect()?;
+conn.run("CREATE NODE TABLE Doc(id INT64, title STRING, PRIMARY KEY(id))")?;
+conn.run_params(
+    "CREATE (:Doc {id: $id, title: $title})",
+    vec![("id", Value::Int64(1)), ("title", Value::String("alpha".into()))],
+)?;
+let rows = conn.run("MATCH (d:Doc) RETURN d.title AS title")?;
+```
+
+`kgpacks-packs` builds a pack (manifest + LadybugDB graph store) and loads it back:
+
+```rust
+use kgpacks_packs::{build_pack, load_pack, Article, PackContent, PackManifest};
+
+let manifest = PackManifest::new("rust-expert", "1.0.0");
+let content = PackContent {
+    articles: vec![Article {
+        title: "Rust".into(),
+        category: "Programming".into(),
+        word_count: 1200,
+        expansion_depth: 1,
+    }],
+    ..PackContent::default()
+};
+
+build_pack("/tmp/rust-expert", &manifest, &content)?;
+let loaded = load_pack("/tmp/rust-expert")?;
+assert_eq!(loaded.graph_stats()?["articles"], 1.0);
+```
 
 ## License
 

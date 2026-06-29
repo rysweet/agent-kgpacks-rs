@@ -8,3 +8,8 @@ authors.workspace = true
 description = "Graph + vector + FTS store (LadybugDB-backed) for agent-kgpacks-rs."
 
 [dependencies]
+lbug.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
