@@ -199,6 +199,35 @@ fn build_pack_writes_integer_graph_stats_as_integers() {
 }
 
 #[test]
+fn build_pack_keeps_computed_graph_stats_even_when_input_manifest_had_null_stats() {
+    // Regression: a manifest loaded from JSON with `graph_stats: null` carries an
+    // explicit null in `extra`. build_pack populates the typed graph_stats from
+    // the content; that computed value must NOT be clobbered by the stale null.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pack_dir = dir.path().join("rust-expert");
+
+    let null_template = kgpacks_packs::validate_manifest(
+        &serde_json::json!({ "name": "rust-expert", "version": "1.0.0", "graph_stats": null }),
+    )
+    .expect("valid template");
+
+    let built = build_pack(&pack_dir, &null_template, &sample_content()).expect("build");
+    assert_eq!(
+        built.manifest.graph_stats.as_ref().map(|s| s["articles"]),
+        Some(2.0),
+        "computed graph_stats must survive a null-stats input manifest"
+    );
+
+    let raw = std::fs::read_to_string(pack_dir.join(MANIFEST_FILENAME)).expect("read manifest");
+    let value: serde_json::Value = serde_json::from_str(&raw).expect("parse manifest");
+    assert!(
+        value["graph_stats"].is_object(),
+        "on-disk graph_stats must be the computed object, not null: {value}"
+    );
+    assert_eq!(value["graph_stats"]["articles"], serde_json::json!(2));
+}
+
+#[test]
 fn load_pack_errors_when_there_is_no_graph_store() {
     let dir = tempfile::tempdir().expect("tempdir");
     // A directory with a manifest but no graph store is not a loadable pack.

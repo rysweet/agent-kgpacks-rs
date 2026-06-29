@@ -97,6 +97,12 @@ impl PackManifest {
             map.insert("eval_scores".into(), number_map_to_value(eval_scores));
         }
         for (key, value) in &self.extra {
+            // Never let a preserved `extra` key (e.g. an explicit null for an
+            // optional section) clobber a populated typed field already emitted
+            // above. Typed fields are authoritative for the known keys.
+            if map.contains_key(key) {
+                continue;
+            }
             map.insert(key.clone(), value.clone());
         }
         Value::Object(map)
