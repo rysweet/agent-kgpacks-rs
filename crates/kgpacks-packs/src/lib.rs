@@ -1,39 +1,34 @@
-//! `kgpacks-packs` — knowledge-pack manifests, registry and install.
+//! `kgpacks-packs` — knowledge-pack manifests, schema and build/load.
 //!
-//! Rust port of `@kgpacks/packs`. The M1 scaffold models pack identity; the
-//! registry, tarball install and version resolution land across M2-M5.
+//! Rust port of `@kgpacks/packs`. M2 delivers the **schema + build/load** half:
+//!
+//! * [`manifest`] — the `manifest.json` model and validation gate
+//!   (`packages/packs/src/manifest.ts`).
+//! * [`versioning`] — SemVer 2.0 helpers (`packages/packs/src/versioning.ts`).
+//! * [`pack`] — the LadybugDB-backed pack graph schema plus
+//!   [`build_pack`](pack::build_pack) / [`load_pack`](pack::load_pack), whose
+//!   round-trip over the graph store is the M2 acceptance gate.
+//!
+//! The registry, tarball installer and version resolution surfaces land in a
+//! later milestone.
 
-/// Metadata describing an installable knowledge pack.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PackManifest {
-    /// Pack name.
-    pub name: String,
-    /// Semantic version string.
-    pub version: String,
-}
+mod errors;
+pub mod manifest;
+pub mod pack;
+pub mod versioning;
 
-impl PackManifest {
-    /// Build a manifest from a name and version.
-    pub fn new(name: impl Into<String>, version: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            version: version.into(),
-        }
-    }
+pub use errors::{PacksError, Result};
 
-    /// Canonical `name@version` identifier.
-    pub fn id(&self) -> String {
-        format!("{}@{}", self.name, self.version)
-    }
-}
+pub use manifest::{
+    load_manifest, load_manifest_from_dir, manifest_path_in, pack_name_re, parse_manifest_str,
+    save_manifest, validate_manifest, PackManifest, MANIFEST_FILENAME,
+};
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub use versioning::{
+    compare_versions, is_valid_semver, latest_version, parse_version, sort_versions, ParsedVersion,
+};
 
-    #[test]
-    fn builds_pack_id() {
-        let m = PackManifest::new("cve", "1.0.0");
-        assert_eq!(m.id(), "cve@1.0.0");
-    }
-}
+pub use pack::{
+    build_pack, load_pack, Article, BuiltPack, Entity, LoadedPack, PackContent,
+    GRAPH_STORE_FILENAME, NODE_TABLE_DDL, REL_TABLE_DDL, SCHEMA,
+};

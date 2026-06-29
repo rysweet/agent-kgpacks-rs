@@ -20,6 +20,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
+      - name: Install build dependencies
+        # `kgpacks-db` links LadybugDB (the `lbug` crate), which compiles its
+        # bundled C++ engine from source via CMake. ubuntu-latest ships these,
+        # but install them explicitly so the build never depends on the image.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake build-essential
+
       - name: Toolchain
         run: |
           rustup component add rustfmt clippy
