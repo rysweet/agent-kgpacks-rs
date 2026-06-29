@@ -56,19 +56,28 @@ pub fn is_valid_semver(version: &str) -> bool {
 
 /// Parse `version` into its [`ParsedVersion`] components.
 ///
-/// Errors with [`PacksError::ManifestValidation`] for any non-SemVer input.
+/// Errors with [`PacksError::ManifestValidation`] for any non-SemVer input, or
+/// if a numeric core component is too large to fit in `u64` (the grammar permits
+/// arbitrarily long numeric cores, so this is reachable on untrusted input —
+/// fail cleanly rather than panic).
 pub fn parse_version(version: &str) -> Result<ParsedVersion> {
     let captures = semver_re().captures(version).ok_or_else(|| {
         PacksError::ManifestValidation(format!(
             "invalid version \"{version}\" (must be valid SemVer 2.0)"
         ))
     })?;
-    // Core groups always match when the regex matches, so the parses cannot fail.
     let group = |index: usize| captures.get(index).map(|m| m.as_str()).unwrap_or("");
+    let core = |index: usize| -> Result<u64> {
+        group(index).parse::<u64>().map_err(|_| {
+            PacksError::ManifestValidation(format!(
+                "invalid version \"{version}\": numeric component does not fit in u64"
+            ))
+        })
+    };
     Ok(ParsedVersion {
-        major: group(1).parse().expect("numeric major"),
-        minor: group(2).parse().expect("numeric minor"),
-        patch: group(3).parse().expect("numeric patch"),
+        major: core(1)?,
+        minor: core(2)?,
+        patch: core(3)?,
         prerelease: split_identifiers(group(4)),
         build: split_identifiers(group(5)),
     })

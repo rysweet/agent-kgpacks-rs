@@ -178,6 +178,19 @@ fn latest_version_returns_the_highest_precedence_version() {
 }
 
 #[test]
+fn parse_version_errors_instead_of_panicking_on_an_out_of_range_core() {
+    // 2^64: the unbounded numeric-core grammar accepts it (matching the
+    // reference's isValidSemver), but it does not fit in u64. Parsing must fail
+    // cleanly — never panic — and the comparators must propagate the error.
+    let huge = "18446744073709551616.0.0";
+    assert!(is_valid_semver(huge));
+    assert!(parse_version(huge).is_err());
+    assert!(compare_versions(huge, "1.0.0").is_err());
+    assert!(sort_versions(&[huge, "1.0.0"]).is_err());
+    assert!(latest_version(&[huge]).is_err());
+}
+
+#[test]
 fn latest_version_returns_none_for_an_empty_list() {
     assert_eq!(latest_version(&[]).unwrap(), None);
 }
