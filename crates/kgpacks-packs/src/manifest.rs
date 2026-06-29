@@ -106,7 +106,15 @@ impl PackManifest {
 fn number_map_to_value(values: &BTreeMap<String, f64>) -> Value {
     let mut map = Map::new();
     for (key, &num) in values {
-        if let Some(number) = serde_json::Number::from_f64(num) {
+        // Emit integral counts as integers (e.g. `294`, not `294.0`) to match the
+        // reference's on-disk format; non-integral stats (e.g. `size_mb`) stay
+        // floats.
+        let number = if num.is_finite() && num.fract() == 0.0 && num.abs() < i64::MAX as f64 {
+            Some(serde_json::Number::from(num as i64))
+        } else {
+            serde_json::Number::from_f64(num)
+        };
+        if let Some(number) = number {
             map.insert(key.clone(), Value::Number(number));
         }
     }
@@ -192,7 +200,16 @@ pub fn validate_manifest(value: &Value) -> Result<PackManifest> {
 
     let mut extra = BTreeMap::new();
     for (key, value) in object {
-        if KNOWN_KEYS.contains(&key.as_str()) || DANGEROUS_KEYS.contains(&key.as_str()) {
+        if DANGEROUS_KEYS.contains(&key.as_str()) {
+            continue;
+        }
+        if KNOWN_KEYS.contains(&key.as_str()) {
+            // Non-null known keys are represented by the typed fields above and
+            // re-emitted by `to_value`. Preserve an explicit `null` for an
+            // optional section (the reference re-emits `eval_scores: null`).
+            if value.is_null() && (key == "graph_stats" || key == "eval_scores") {
+                extra.insert(key.clone(), Value::Null);
+            }
             continue;
         }
         extra.insert(key.clone(), value.clone());

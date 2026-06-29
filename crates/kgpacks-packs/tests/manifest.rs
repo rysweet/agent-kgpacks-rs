@@ -10,7 +10,7 @@ use kgpacks_packs::{
     load_manifest, load_manifest_from_dir, manifest_path_in, pack_name_re, save_manifest,
     validate_manifest, PackManifest, MANIFEST_FILENAME,
 };
-use serde_json::json;
+use serde_json::{json, Value};
 
 fn stats(pairs: &[(&str, f64)]) -> BTreeMap<String, f64> {
     pairs.iter().map(|(k, v)| ((*k).to_owned(), *v)).collect()
@@ -137,6 +137,33 @@ fn validate_manifest_strips_dangerous_keys() {
     let m = validate_manifest(&value).expect("valid");
     assert!(!m.extra.contains_key("__proto__"));
     assert!(!m.extra.contains_key("polluted"));
+}
+
+#[test]
+fn validate_manifest_treats_present_null_optional_sections_as_absent() {
+    let value =
+        json!({ "name": "ok", "version": "1.0.0", "graph_stats": null, "eval_scores": null });
+    let m = validate_manifest(&value).expect("valid");
+    assert!(m.graph_stats.is_none());
+    assert!(m.eval_scores.is_none());
+}
+
+#[test]
+fn explicit_null_optional_sections_survive_a_save_load_round_trip() {
+    // Real catalog manifests carry `eval_scores: null`; the reference re-emits it.
+    let value = json!({ "name": "ok", "version": "1.0.0", "eval_scores": null });
+    let m = validate_manifest(&value).expect("valid");
+    assert_eq!(m.extra.get("eval_scores"), Some(&Value::Null));
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = manifest_path_in(dir.path());
+    save_manifest(&path, &m).expect("save");
+    let content = std::fs::read_to_string(&path).expect("read");
+    assert!(
+        content.contains("\"eval_scores\": null"),
+        "the explicit null key should be preserved on disk"
+    );
+    assert_eq!(load_manifest(&path).expect("load"), m);
 }
 
 #[test]

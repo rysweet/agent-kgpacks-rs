@@ -164,6 +164,41 @@ fn build_pack_refuses_to_overwrite_an_existing_store() {
 }
 
 #[test]
+fn build_pack_validates_manifest_before_any_side_effect_and_allows_retry() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pack_dir = dir.path().join("rust-expert");
+
+    // An invalid manifest (bad pack name) must fail before the store is written.
+    let invalid = PackManifest::new("../bad", "1.0.0");
+    assert!(build_pack(&pack_dir, &invalid, &sample_content()).is_err());
+    assert!(
+        !pack_dir.join(GRAPH_STORE_FILENAME).exists(),
+        "no graph store should be left behind on validation failure"
+    );
+
+    // The directory is not wedged: a subsequent valid build succeeds.
+    let built = build_pack(&pack_dir, &manifest(), &sample_content()).expect("retry build");
+    assert_eq!(built.name, "rust-expert");
+    assert!(pack_dir.join(GRAPH_STORE_FILENAME).is_file());
+}
+
+#[test]
+fn build_pack_writes_integer_graph_stats_as_integers() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pack_dir = dir.path().join("rust-expert");
+    build_pack(&pack_dir, &manifest(), &sample_content()).expect("build");
+
+    let raw = std::fs::read_to_string(pack_dir.join(MANIFEST_FILENAME)).expect("read manifest");
+    let value: serde_json::Value = serde_json::from_str(&raw).expect("parse manifest");
+    let articles = &value["graph_stats"]["articles"];
+    assert!(
+        articles.is_u64() || articles.is_i64(),
+        "expected an integer count, got {articles}"
+    );
+    assert!(!articles.is_f64(), "count must not serialize as a float");
+}
+
+#[test]
 fn load_pack_errors_when_there_is_no_graph_store() {
     let dir = tempfile::tempdir().expect("tempdir");
     // A directory with a manifest but no graph store is not a loadable pack.

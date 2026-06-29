@@ -20,7 +20,9 @@ use std::path::{Path, PathBuf};
 use kgpacks_db::{Database, DatabaseOptions, Value};
 
 use crate::errors::{PacksError, Result};
-use crate::manifest::{load_manifest_from_dir, manifest_path_in, save_manifest, PackManifest};
+use crate::manifest::{
+    load_manifest_from_dir, manifest_path_in, save_manifest, validate_manifest, PackManifest,
+};
 
 /// Filename of the LadybugDB graph store inside a pack directory.
 pub const GRAPH_STORE_FILENAME: &str = "graph.lbug";
@@ -143,7 +145,10 @@ fn apply_schema(conn: &kgpacks_db::Connection<'_>) -> Result<()> {
 /// and write the validated manifest.
 ///
 /// `graph_stats` on the manifest is (re)populated from the materialized content
-/// so the manifest and the store agree. Fails if `pack_dir` already contains a
+/// so the manifest and the store agree. The (populated) manifest is validated
+/// **before** any filesystem side effect, so invalid input fails cleanly; if a
+/// later step fails, the partial graph store is removed so the directory can be
+/// rebuilt (never leaves partial state). Fails if `pack_dir` already contains a
 /// graph store.
 pub fn build_pack(
     pack_dir: impl AsRef<Path>,
@@ -152,6 +157,13 @@ pub fn build_pack(
 ) -> Result<BuiltPack> {
     let pack_dir = pack_dir.as_ref();
     let graph_path = pack_dir.join(GRAPH_STORE_FILENAME);
+
+    // Build the manifest we intend to write (graph_stats from the materialized
+    // content) and validate it up front — before touching the filesystem.
+    let mut written = manifest.clone();
+    written.graph_stats = Some(content.graph_stats());
+    let written = validate_manifest(&written.to_value())?;
+
     if graph_path.exists() {
         return Err(PacksError::PackInstall(format!(
             "graph store already exists at {}",
@@ -160,13 +172,34 @@ pub fn build_pack(
     }
     std::fs::create_dir_all(pack_dir)?;
 
+    // Materialize the store; on any failure remove the partial store + WAL so the
+    // directory is not wedged for a later retry.
+    if let Err(err) = materialize_store(&graph_path, content) {
+        remove_partial_store(&graph_path);
+        return Err(err);
+    }
+    if let Err(err) = save_manifest(manifest_path_in(pack_dir), &written) {
+        remove_partial_store(&graph_path);
+        return Err(err);
+    }
+
+    Ok(BuiltPack {
+        name: written.name.clone(),
+        version: written.version.clone(),
+        path: pack_dir.to_path_buf(),
+        manifest: written,
+    })
+}
+
+/// Materialize `content` into a fresh LadybugDB store at `graph_path`.
+fn materialize_store(graph_path: &Path, content: &PackContent) -> Result<()> {
     // Bulk-load knob: WAL-only appends during the load, one checkpoint at close,
     // so the resulting pack file is self-contained (no .wal sidecar).
     let options = DatabaseOptions {
         auto_checkpoint: Some(false),
         ..DatabaseOptions::default()
     };
-    let mut db = Database::open_with_options(&graph_path, options)?;
+    let mut db = Database::open_with_options(graph_path, options)?;
     {
         let conn = db.connect()?;
         apply_schema(&conn)?;
@@ -209,18 +242,14 @@ pub fn build_pack(
         }
     }
     db.close();
+    Ok(())
+}
 
-    // Populate graph_stats from the materialized content, then write the manifest.
-    let mut written = manifest.clone();
-    written.graph_stats = Some(content.graph_stats());
-    save_manifest(manifest_path_in(pack_dir), &written)?;
-
-    Ok(BuiltPack {
-        name: written.name.clone(),
-        version: written.version.clone(),
-        path: pack_dir.to_path_buf(),
-        manifest: written,
-    })
+/// Best-effort removal of a partially-written graph store and its WAL sidecar.
+fn remove_partial_store(graph_path: &Path) {
+    let _ = std::fs::remove_file(graph_path);
+    let wal = graph_path.with_file_name(format!("{GRAPH_STORE_FILENAME}.wal"));
+    let _ = std::fs::remove_file(wal);
 }
 
 /// A pack opened from disk by [`load_pack`]: its validated manifest plus the
