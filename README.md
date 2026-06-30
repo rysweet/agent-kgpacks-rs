@@ -10,11 +10,13 @@ workspace). This repository mirrors that module decomposition as a **Cargo
 workspace** and reuses the Simard Rust stack (`lbug` for the graph + vector/FTS
 engine, RustyClawd / Copilot SDK for the agent).
 
-> **Status:** M3 — ingestion pipeline parity. On top of the M2 graph store,
-> `kgpacks-ingestion` ports the fetch → chunk → extract → embed → load pipeline
-> (content sources, the expansion state machine, link discovery, and LLM
-> extraction sanitization) and `kgpacks-embeddings` ports chunking and embedding
-> generation. The retrieval/agent crates remain compiling stubs. See the
+> **Status:** M4 — retrieval parity (graph + vector + FTS). On top of the M2
+> graph store and the M3 ingestion pipeline, `kgpacks-query` ports the CORE
+> read path: cosine **vector** retrieval over a LadybugDB vector index, **hybrid**
+> retrieval that blends vector similarity with `LINKS_TO` **graph** proximity and
+> title-keyword **full-text** matches, and a standalone read-only **Cypher**
+> validator. The enhancement layer (cross-encoder reranking, Cypher-RAG,
+> synthesis) and the agent surfaces land with M5. See the
 > [roadmap](#porting-roadmap-m1m5) for what lands when.
 
 ## Target flow
@@ -92,11 +94,18 @@ workspace. As of M2, `kgpacks-db` consumes `lbug`; the others remain stubs.
   mockable `Extractor` trait), link discovery, the claim/heartbeat/reclaim work
   queue, the per-article processor, and the `process_one` orchestrator step.
   Embeddings are generated and stored; the HNSW vector index over them is M4.
-- **M4 — Hybrid retrieval.** Implement `kgpacks-query` vector + FTS retrieval,
-  cross-encoder reranking and safe Cypher-RAG generation.
-- **M5 — Agent + surfaces.** Wire `kgpacks-agent` to the Copilot SDK via RustyClawd
-  and complete the `kgpacks-cli`, `kgpacks-mcp` and `kgpacks-backend` surfaces, plus
-  the `parity/` harness against the reference.
+- **M4 — Retrieval parity: graph + vector + FTS (landed).** `kgpacks-query` ports
+  the CORE read path of `@kgpacks/query`: `vector_retrieve` (cosine search via
+  `CALL QUERY_VECTOR_INDEX`), `hybrid_retrieve` (a weighted blend of the vector,
+  `LINKS_TO` graph-proximity, and title-keyword/full-text signals), the
+  `PackRetriever` facade (lazy `vector`/`fts` extension loading + mode dispatch),
+  and the standalone read-only `validate_cypher` guard. The ENHANCEMENTS layer
+  (graph reranker, cross-encoder, few-shot, Cypher-RAG, multi-document synthesis)
+  and `retrieveAndSynthesize` are agent-tied and land with M5.
+- **M5 — Agent + surfaces.** Wire `kgpacks-agent` to the Copilot SDK via RustyClawd,
+  add the retrieval ENHANCEMENTS layer + `retrieveAndSynthesize`, and complete the
+  `kgpacks-cli`, `kgpacks-mcp` and `kgpacks-backend` surfaces, plus the `parity/`
+  harness against the reference.
 
 ## Build and test
 
@@ -218,6 +227,81 @@ BGE transformer, so the whole suite runs offline. Two documented working-store
 deviations from the reference: timestamps are `INT64` epoch-millis (not
 `TIMESTAMP`), and the embedding columns are populated but the HNSW vector index
 over them is deferred to M4.
+
+## Retrieval (M4)
+
+`kgpacks-query` turns a natural-language query into a ranked list of section
+hits over a built pack. A [`PackRetriever`] binds a [`kgpacks-db`] connection, an
+embedder, and a pack schema (defaults `Section` / `embedding_idx`), then
+dispatches `retrieve` to one of two modes:
+
+- **`vector`** (default) — embed the query, run cosine search via
+  `CALL QUERY_VECTOR_INDEX`, score each hit `clamp(1 - distance, 0, 1)`, nearest
+  first.
+- **`hybrid`** — blend three weighted signals into one score per node (reference
+  `hybrid_retrieve` defaults `vector 0.5 / graph 0.3 / keyword 0.2`):
+  1. **vector** cosine similarity,
+  2. **graph** `LINKS_TO` proximity from the first few scored nodes
+     (`+ graph_weight * 0.5` per neighbor),
+  3. **keyword / full-text** title `CONTAINS` matches for the leading query
+     terms (`+ keyword_weight * 0.7` per match).
+
+```rust
+use kgpacks_db::{Database, Value};
+use kgpacks_query::{PackRetriever, RetrieveMode, RetrieveOptions};
+
+let db = Database::in_memory()?;
+let conn = db.connect()?;
+
+// A pack is a Section table with a FLOAT[768] embedding indexed for cosine
+// search, plus LINKS_TO edges for the graph signal (built by ingestion).
+conn.load_extension("vector")?;
+conn.run(
+    "CREATE NODE TABLE Section(id STRING, title STRING, content STRING, \
+     embedding FLOAT[768], PRIMARY KEY(id))",
+)?;
+conn.run("CREATE REL TABLE LINKS_TO(FROM Section TO Section)")?;
+// … insert Section rows with embeddings …
+conn.run("CALL CREATE_VECTOR_INDEX('Section', 'embedding_idx', 'embedding', metric := 'cosine')")?;
+
+// Vector retrieval (BGE-parity embedder by default).
+let retriever = PackRetriever::new(&conn);
+let top = retriever.retrieve("how do plants make energy?", &RetrieveOptions {
+    k: Some(5),
+    ..Default::default()
+})?;
+
+// Hybrid retrieval (vector + graph + full-text).
+let blended = retriever.retrieve("photosynthesis", &RetrieveOptions {
+    k: Some(5),
+    mode: RetrieveMode::Hybrid,
+    weights: None, // reference defaults
+})?;
+```
+
+The crate is a one-to-one port of the reference CORE retrieval modules; each maps
+to a Rust module proven by a mirroring parity test:
+
+| Reference (`@kgpacks/query`)         | Rust module                                  | Parity test                       |
+| ------------------------------------ | -------------------------------------------- | --------------------------------- |
+| `query/src/vector.ts`                | `kgpacks-query::vector` (`vector_retrieve`)  | `tests/vector.rs`                 |
+| `query/src/hybrid.ts`                | `kgpacks-query::hybrid` (`hybrid_retrieve`)  | `tests/hybrid.rs`, `tests/combined.rs` |
+| `query/src/retriever.ts` (CORE)      | `kgpacks-query::retriever` (`PackRetriever`) | `tests/vector.rs`, `tests/hybrid.rs` |
+| `query/src/cypher-safety.ts`         | `kgpacks-query::cypher_safety` (`validate_cypher`) | `tests/cypher_safety.rs`    |
+| `query/src/row.ts`                   | `kgpacks-query::row`                          | `tests/row.rs`                    |
+| `query/src/{constants,types,errors}.ts` | `kgpacks-query::{constants,types,errors}` | `tests/surface.rs`                |
+
+Retrieval is driven through a deterministic injected embedder in the parity
+suite (known one-hot/graded vectors), so cosine similarities are exact and the
+only variability under test is the scoring formula itself — the same approach the
+reference `hybrid.test.ts` uses. This keeps the suite **offline and hermetic**
+while reproducing the reference arithmetic exactly (e.g. the hybrid worked
+example scores `{1: 0.64, 2: 0.15}`). The `id` coercion handles both the
+reference `INT64` fixtures and the RS pack's `STRING` `Section.id`. Two parity
+notes carried from the reference: the keyword signal is a title `CONTAINS` match
+(not an FTS-index procedure), and `validate_cypher` is exported as a standalone
+guard — the CORE read path itself never routes user text into Cypher (it runs
+fixed, parameter-bound vector/graph queries).
 
 ## License
 

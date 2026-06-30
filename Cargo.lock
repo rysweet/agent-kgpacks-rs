@@ -338,6 +338,9 @@ dependencies = [
  "kgpacks-agent",
  "kgpacks-db",
  "kgpacks-embeddings",
+ "regex",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]
