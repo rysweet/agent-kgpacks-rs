@@ -213,3 +213,16 @@ fn sanitize_error_redacts_secrets() {
     );
     assert!(jwt.contains("REDACTED"));
 }
+
+#[test]
+fn sanitize_error_redacts_dict_style_and_authorization_headers() {
+    // A 20–29-char dict-style value (too short for the bare-key rule) must still
+    // be redacted by the dict-style rule.
+    let dict = sanitize_error("config {\"api_key\": \"abcdefghij0123456789\"}");
+    assert!(!dict.contains("abcdefghij0123456789"), "got: {dict}");
+    assert!(dict.contains("REDACTED"));
+
+    let header = sanitize_error("Authorization: Bearer abcdef123456");
+    assert!(!header.contains("abcdef123456"), "got: {header}");
+    assert!(header.contains("REDACTED"));
+}

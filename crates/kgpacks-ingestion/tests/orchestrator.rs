@@ -114,7 +114,8 @@ fn forwards_title_category_and_depth_to_the_processor() {
         &processor,
         &queue,
         &links,
-    );
+    )
+    .unwrap();
 
     let calls = processor.calls.borrow();
     assert_eq!(calls.len(), 1);
@@ -136,7 +137,8 @@ fn category_defaults_to_general_when_absent() {
         &processor,
         &queue,
         &links,
-    );
+    )
+    .unwrap();
 
     assert_eq!(processor.calls.borrow()[0].1, "General");
 }
@@ -156,7 +158,8 @@ fn success_path_heartbeats_discovers_and_advances_to_processed() {
         &processor,
         &queue,
         &links,
-    );
+    )
+    .unwrap();
 
     assert_eq!(title, "Graph theory");
     assert!(success);
@@ -183,7 +186,8 @@ fn link_discovery_skipped_at_max_depth() {
         &processor,
         &queue,
         &links,
-    );
+    )
+    .unwrap();
 
     assert!(links.calls.borrow().is_empty());
     assert_eq!(
@@ -204,7 +208,8 @@ fn failure_path_marks_failed_and_does_not_advance() {
         &processor,
         &queue,
         &links,
-    );
+    )
+    .unwrap();
 
     assert_eq!(title, "Failing Article");
     assert!(!success);
@@ -227,7 +232,7 @@ fn failure_without_message_marks_failed_with_unknown_error() {
     let queue = MockQueue::default();
     let links = MockLinks::default();
 
-    process_one(&article("Mystery", 0, None), 2, &processor, &queue, &links);
+    process_one(&article("Mystery", 0, None), 2, &processor, &queue, &links).unwrap();
 
     assert_eq!(
         queue.failures.borrow().as_slice(),

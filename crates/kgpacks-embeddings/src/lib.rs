@@ -22,9 +22,7 @@ pub use chunker::{
     DEFAULT_OVERLAP,
 };
 
-use std::collections::hash_map::DefaultHasher;
 use std::fmt;
-use std::hash::{Hash, Hasher};
 
 /// Default embedding dimensionality (matches the reference BGE model's 768).
 pub const DEFAULT_DIM: usize = 768;
@@ -83,12 +81,16 @@ pub trait EmbeddingModel {
 /// Deterministic, hermetic embedding generator.
 ///
 /// Produces fixed-dimension, unit-norm vectors via a signed hashed
-/// bag-of-words projection: each lowercased alphanumeric token is hashed to a
-/// dimension and a sign, contributions are accumulated, and the vector is
-/// L2-normalized. This makes the retrieval contract hold — identical text maps
-/// to an identical vector, and texts sharing tokens have higher cosine
-/// similarity than texts that share none — without any model download or
-/// non-determinism.
+/// bag-of-words projection: each lowercased alphanumeric token is hashed (with
+/// a fixed FNV-1a hash, so output is stable across Rust versions and platforms)
+/// to a dimension and a sign, contributions are accumulated, and the vector is
+/// L2-normalized. Identical text always maps to an identical unit vector, and
+/// texts that share tokens are *typically* more cosine-similar than texts that
+/// share none — a representative lexical similarity, though exact ordering is
+/// not guaranteed under hash collisions. Token-empty text (e.g. `""` or
+/// punctuation) still yields a defined unit vector via a sentinel token, so
+/// callers never see a zero vector or a NaN cosine (only `dim == 0` yields an
+/// empty vector).
 #[derive(Debug, Clone)]
 pub struct Embedder {
     dim: usize,
@@ -130,19 +132,20 @@ impl Embedder {
         if self.dim == 0 {
             return vector;
         }
+        let mut tokens = 0usize;
         for token in text.split(|c: char| !c.is_alphanumeric()) {
             if token.is_empty() {
                 continue;
             }
-            let lowered = token.to_lowercase();
-            let mut hasher = DefaultHasher::new();
-            lowered.hash(&mut hasher);
-            let hash = hasher.finish();
-            let bucket = (hash % self.dim as u64) as usize;
-            // A second hash bit gives each token a stable sign, spreading mass
-            // across the space so unrelated tokens are less likely to reinforce.
-            let sign = if (hash >> 32) & 1 == 0 { 1.0 } else { -1.0 };
-            vector[bucket] += sign;
+            add_token(&mut vector, &token.to_lowercase());
+            tokens += 1;
+        }
+        // Token-empty input (e.g. "" or punctuation) still gets a defined unit
+        // vector: the reference transformer returns a real embedding for such
+        // text (only an empty *batch* is an error), and a zero vector would make
+        // a caller's cosine similarity NaN.
+        if tokens == 0 {
+            add_token(&mut vector, SENTINEL_TOKEN);
         }
         l2_normalize(&mut vector);
         vector
@@ -183,6 +186,32 @@ impl EmbeddingModel for Embedder {
     fn embed(&self, text: &str) -> Vec<f32> {
         Embedder::embed(self, text)
     }
+}
+
+/// Sentinel token hashed for text with no alphanumeric tokens, so the resulting
+/// vector is still unit-norm. Contains a NUL byte so it cannot collide with any
+/// real lowercased token.
+const SENTINEL_TOKEN: &str = "\u{0}empty";
+
+/// FNV-1a 64-bit hash — a fixed, fully-specified hash so the deterministic
+/// embedding is stable across Rust versions and platforms (unlike
+/// `DefaultHasher`, whose output is unspecified).
+fn fnv1a_64(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for &byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// Add one token's signed contribution to `vector` (length must be > 0): the
+/// hash low bits pick the dimension, the top bit picks a stable sign.
+fn add_token(vector: &mut [f32], token: &str) {
+    let hash = fnv1a_64(token.as_bytes());
+    let bucket = (hash % vector.len() as u64) as usize;
+    let sign = if (hash >> 63) & 1 == 0 { 1.0 } else { -1.0 };
+    vector[bucket] += sign;
 }
 
 /// L2-normalize `vector` in place; a zero vector is left unchanged.

@@ -195,6 +195,16 @@ fn detect_domain_requires_two_keyword_hits() {
     assert_eq!(detect_domain(&[]), None);
 }
 
+#[test]
+fn detect_domain_treats_underscore_as_a_word_character() {
+    // Python's `\bkeyword\b` does not match across `_` (a word char), so an
+    // all-underscore category yields no keyword hits.
+    assert_eq!(
+        detect_domain(&["World_War_II".to_string(), "Military_history".to_string()]),
+        None
+    );
+}
+
 // ── parse_extraction_response ───────────────────────────────────────────────
 
 #[test]
@@ -229,4 +239,13 @@ fn unparseable_response_yields_empty_result() {
     assert!(result.entities.is_empty());
     assert!(result.relationships.is_empty());
     assert!(result.key_facts.is_empty());
+}
+
+#[test]
+fn parses_prose_inside_a_fence_via_brace_narrowing() {
+    // A code fence containing prose around the object still parses: after fence
+    // stripping the first `{`..last `}` span is taken.
+    let response = "```json\nHere is the data: {\"key_facts\": [\"fact one\"]}\n```";
+    let result = parse_extraction_response(response);
+    assert_eq!(result.key_facts, vec!["fact one".to_string()]);
 }

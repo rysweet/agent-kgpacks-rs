@@ -114,3 +114,24 @@ fn non_bge_query_generation_does_not_add_a_prefix() {
     let query = plain.generate_query(&["graph databases"]).unwrap();
     assert_eq!(doc[0], query[0]);
 }
+
+#[test]
+fn token_empty_text_still_yields_a_unit_vector() {
+    // Empty / punctuation-only text has no alphanumeric tokens; a sentinel keeps
+    // the vector unit-norm so callers never hit a zero vector or NaN cosine.
+    let gen = Embedder::bge();
+    for text in ["", "   ", "!!!", "... --- ..."] {
+        let v = gen.embed(text);
+        assert_eq!(v.len(), DEFAULT_DIM);
+        let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-4, "norm for {text:?} was {norm}");
+    }
+}
+
+#[test]
+fn embedding_is_stable_across_instances() {
+    // FNV-1a hashing makes the embedding fixed, not just per-process determinism.
+    let a = Embedder::bge().embed("ownership and borrowing");
+    let b = Embedder::bge().embed("ownership and borrowing");
+    assert_eq!(a, b);
+}

@@ -121,14 +121,17 @@ impl ArticleInfo {
 ///
 /// Returns `(title, success, error)`. The category defaults to `"General"` when
 /// the [`ArticleInfo`] has none, and link discovery is skipped at or above
-/// `max_depth`. Parity with `RyuGraphOrchestrator._process_one`.
+/// `max_depth`. Errors from link discovery and the state-machine writes
+/// (`advance_state` / `mark_failed`) propagate, mirroring how those exceptions
+/// escape `RyuGraphOrchestrator._process_one`; the heartbeat is best-effort
+/// (the reference's `update_heartbeat` logs and swallows internally).
 pub fn process_one(
     article: &ArticleInfo,
     max_depth: i64,
     processor: &dyn Processor,
     queue: &dyn WorkQueue,
     link_discovery: &dyn LinkDiscoverer,
-) -> (String, bool, Option<String>) {
+) -> Result<(String, bool, Option<String>)> {
     let title = article.title.clone();
     let depth = article.expansion_depth;
     let category = article
@@ -136,26 +139,26 @@ pub fn process_one(
         .clone()
         .unwrap_or_else(|| "General".to_string());
 
-    // Heartbeat before doing the (potentially slow) work.
+    // Heartbeat before doing the (potentially slow) work; best-effort.
     let _ = queue.update_heartbeat(&title);
 
     let outcome = processor.process_article(&title, &category, depth);
 
     if outcome.success {
         if depth < max_depth {
-            let _ = link_discovery.discover_links(&title, &outcome.links, depth, max_depth);
+            link_discovery.discover_links(&title, &outcome.links, depth, max_depth)?;
         }
         // The processor already set `loaded`; advance to `processed`.
-        let _ = queue.advance_state(&title, "processed");
+        queue.advance_state(&title, "processed")?;
     } else {
         let error = outcome
             .error
             .clone()
             .unwrap_or_else(|| "Unknown error".to_string());
-        let _ = queue.mark_failed(&title, &error);
+        queue.mark_failed(&title, &error)?;
     }
 
-    (title, outcome.success, outcome.error)
+    Ok((title, outcome.success, outcome.error))
 }
 
 // ── Concrete trait impls wiring the pipeline components into `process_one` ───
@@ -306,7 +309,7 @@ impl Orchestrator {
         content_source: &dyn ContentSource,
         embedder: &dyn EmbeddingModel,
         extractor: Option<&dyn Extractor>,
-    ) -> (String, bool, Option<String>) {
+    ) -> Result<(String, bool, Option<String>)> {
         let processor = match extractor {
             Some(extractor) => {
                 ArticleProcessor::new(conn, content_source, embedder).with_extractor(extractor)

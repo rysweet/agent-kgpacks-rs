@@ -145,10 +145,13 @@ impl<'a, 'db> ArticleProcessor<'a, 'db> {
 
         self.upsert_article(article, category, word_count, expansion_depth, now)?;
         self.replace_sections(article, sections, section_embeddings)?;
-        self.replace_chunks(article, sections)?;
+        // Chunk creation is optional — a failure here must not fail the load
+        // (parity with the reference's "Chunk creation skipped" guard).
+        let _ = self.replace_chunks(article, sections);
         self.replace_categories(article)?;
         if let Some(extraction) = extraction {
-            self.replace_extraction(article, extraction)?;
+            // LLM-extraction insertion is optional too — never fail the load on it.
+            let _ = self.replace_extraction(article, extraction);
         }
         Ok(())
     }
@@ -246,13 +249,15 @@ impl<'a, 'db> ArticleProcessor<'a, 'db> {
     ) -> crate::error::Result<()> {
         let contents: Vec<&str> = sections.iter().map(|s| s.content.as_str()).collect();
         let chunks: Vec<Chunk> = chunk_sections(&contents, &article.title);
+        if chunks.is_empty() {
+            return Ok(());
+        }
+        // Replace existing chunks only when there are new ones to insert
+        // (parity with the reference's `if chunks:` guard).
         self.conn.run_params(
             "MATCH (a:Article {title: $title})-[r:HAS_CHUNK]->(c:Chunk) DELETE r, c",
             vec![("title", Value::String(article.title.clone()))],
         )?;
-        if chunks.is_empty() {
-            return Ok(());
-        }
         let chunk_texts: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
         let chunk_embeddings = self.embedder.generate(&chunk_texts)?;
 
@@ -394,14 +399,14 @@ fn embedding_value(embedding: &[f32]) -> Value {
 }
 
 /// If `content` is a Wikipedia redirect, return the redirect target.
-/// Parity with the `#REDIRECT [[...]]` handling in `process_article`.
+/// Parity with the `#REDIRECT [[...]]` handling in `process_article`: anchored
+/// at the start of the content (like Python `re.match`), target taken verbatim.
 fn redirect_target(content: &str) -> Option<String> {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {
         Regex::new(r"(?i)^#REDIRECT\s*\[\[(.+?)\]\]").expect("valid redirect regex")
     });
-    re.captures(content.trim_start())
-        .map(|c| c[1].trim().to_string())
+    re.captures(content).map(|c| c[1].to_string())
 }
 
 /// Redact secrets (API keys, bearer tokens, JWTs, URL credentials) from an
@@ -410,6 +415,7 @@ pub fn sanitize_error(error_msg: &str) -> String {
     static RULES: OnceLock<Vec<(Regex, &'static str)>> = OnceLock::new();
     let rules = RULES.get_or_init(|| {
         vec![
+            // 1. key=VALUE / key: VALUE forms.
             (
                 Regex::new(
                     r#"(?i)\b(api[_-]?key|token|secret[_-]?key|bearer|authorization)[=:\s]+['"]?([a-zA-Z0-9_-]{20,128})['"]?"#,
@@ -417,16 +423,33 @@ pub fn sanitize_error(error_msg: &str) -> String {
                 .expect("valid api-key regex"),
                 "$1=***REDACTED***",
             ),
+            // 2. bare `sk-…` keys or long quoted tokens.
             (
                 Regex::new(r#"(['"])(sk-[a-zA-Z0-9_-]{20,128}|[a-zA-Z0-9_-]{30,128})(['"])"#)
                     .expect("valid bare-key regex"),
                 "$1***REDACTED***$3",
             ),
+            // 3. Authorization headers (with or without a Bearer prefix).
+            (
+                Regex::new(r"(?i)(Authorization:\s*)(Bearer\s+)?[a-zA-Z0-9_-]+")
+                    .expect("valid auth-header regex"),
+                "$1***REDACTED***",
+            ),
+            // 4. dict-style `"api_key": "VALUE"`.
+            (
+                Regex::new(
+                    r#"(?i)(["']api[_-]?key["']\s*:\s*["'])([a-zA-Z0-9_-]{20,128})(["'])"#,
+                )
+                .expect("valid dict-key regex"),
+                "$1***REDACTED***$3",
+            ),
+            // 5. JWTs.
             (
                 Regex::new(r"eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]*")
                     .expect("valid jwt regex"),
                 "***REDACTED_JWT***",
             ),
+            // 6. URL-embedded credentials.
             (
                 Regex::new(
                     r"(?i)([?&](api[_-]?key|token|secret|access[_-]?token|auth)=)[a-zA-Z0-9_%-]{8,128}",

@@ -76,7 +76,9 @@ impl<'c, 'db> LinkDiscovery<'c, 'db> {
             match existing_articles.get(link.as_str()) {
                 Some(state) if EXISTING_STATES.contains(&state.as_str()) => {
                     if !existing_links.contains(link.as_str()) {
-                        self.create_link(source_title, link)?;
+                        // Per-link best-effort, like the reference's
+                        // `try: … except: continue` around each link.
+                        let _ = self.create_link(source_title, link);
                     }
                 }
                 Some(_) => {
@@ -88,7 +90,7 @@ impl<'c, 'db> LinkDiscovery<'c, 'db> {
                     if self.insert_discovered_article(link, next_depth).is_ok() {
                         new_articles += 1;
                     }
-                    self.create_link(source_title, link)?;
+                    let _ = self.create_link(source_title, link);
                 }
             }
         }

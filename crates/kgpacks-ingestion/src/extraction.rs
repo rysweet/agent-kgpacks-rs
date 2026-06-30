@@ -154,9 +154,10 @@ const DOMAIN_KEYWORDS: [(&str, &[&str]); 4] = [
 
 /// Classify an article's domain from its categories.
 ///
-/// Uses word-token matching (equivalent to the reference's `\bkeyword\b`
-/// word-boundary match for these single-word keywords) and requires at least
-/// two keyword hits to avoid single-keyword misclassification. Returns the
+/// Uses `\w`-delimited token matching: Python's reference matches `\bkeyword\b`,
+/// and since `_` is a word character in Python regex, underscores stay *within*
+/// a token here too (so `"World_War_II"` is one token, not `war`). Requires at
+/// least two keyword hits to avoid single-keyword misclassification. Returns the
 /// best-scoring domain, or `None`. Parity with `detect_domain`.
 pub fn detect_domain(categories: &[String]) -> Option<String> {
     if categories.is_empty() {
@@ -166,7 +167,7 @@ pub fn detect_domain(categories: &[String]) -> Option<String> {
         .iter()
         .flat_map(|c| {
             c.to_lowercase()
-                .split(|ch: char| !ch.is_alphanumeric())
+                .split(|ch: char| !ch.is_alphanumeric() && ch != '_')
                 .filter(|t| !t.is_empty())
                 .map(str::to_string)
                 .collect::<Vec<_>>()
@@ -384,21 +385,25 @@ pub fn parse_extraction_response(content: &str) -> ExtractionResult {
 }
 
 /// Narrow raw LLM `content` to its JSON object: strip a Markdown code fence if
-/// present, otherwise take the span from the first `{` to the last `}`.
-/// Parity with the fence/boundary stripping in `extract_from_article`.
+/// present, then take the span from the first `{` to the last `}` unless the
+/// text is already a bare object. Parity with the fence/boundary stripping in
+/// `extract_from_article` (the `{…}` narrowing always runs after fence stripping,
+/// so prose inside a fence is still tolerated).
 fn extract_json_object(content: &str) -> String {
     let mut text = content.trim().to_string();
 
-    if let Some(after) = text.split_once("```json") {
-        if let Some((body, _)) = after.1.split_once("```") {
-            return body.trim().to_string();
+    // Strip a Markdown code fence if present.
+    if let Some((_, after)) = text.split_once("```json") {
+        if let Some((body, _)) = after.split_once("```") {
+            text = body.trim().to_string();
         }
     } else if let Some((_, rest)) = text.split_once("```") {
         if let Some((body, _)) = rest.split_once("```") {
-            return body.trim().to_string();
+            text = body.trim().to_string();
         }
     }
 
+    // Narrow to the first `{` … last `}` unless the text already starts with `{`.
     if !text.trim_start().starts_with('{') {
         if let (Some(start), Some(end)) = (text.find('{'), text.rfind('}')) {
             if end > start {

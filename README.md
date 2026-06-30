@@ -194,7 +194,7 @@ let (_title, success, _err) = orchestrator.process_claimed(
     &source,
     &embedder,
     None, // or Some(&extractor) to also load entities/facts/relationships
-);
+)?;
 assert!(success);
 ```
 
