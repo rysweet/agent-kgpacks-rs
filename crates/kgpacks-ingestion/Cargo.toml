@@ -11,3 +11,9 @@ description = "Fetch/chunk/extract/embed ingestion pipeline for agent-kgpacks-rs
 kgpacks-db = { workspace = true }
 kgpacks-embeddings = { workspace = true }
 kgpacks-agent = { workspace = true }
+serde_json = { workspace = true }
+regex = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
