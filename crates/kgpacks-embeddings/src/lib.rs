@@ -88,9 +88,10 @@ pub trait EmbeddingModel {
 /// texts that share tokens are *typically* more cosine-similar than texts that
 /// share none — a representative lexical similarity, though exact ordering is
 /// not guaranteed under hash collisions. Token-empty text (e.g. `""` or
-/// punctuation) still yields a defined unit vector via a sentinel token, so
-/// callers never see a zero vector or a NaN cosine (only `dim == 0` yields an
-/// empty vector).
+/// punctuation) still yields a unit vector via a sentinel token, so it never
+/// collapses to a zero vector or a NaN cosine; at the 768-d production width,
+/// sign-cancellation collisions for ordinary text are vanishingly unlikely
+/// (only `dim == 0` yields an empty vector).
 #[derive(Debug, Clone)]
 pub struct Embedder {
     dim: usize,
