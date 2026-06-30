@@ -15,11 +15,13 @@
 //! * [`validate_cypher`] — a standalone read-only Cypher allow-list
 //!   (`cypher-safety.ts`).
 //!
-//! The ENHANCEMENTS layer (graph reranker, cross-encoder, few-shot, Cypher-RAG,
-//! multi-document synthesis) and the agent-grounded `retrieveAndSynthesize` are
-//! deferred to **M5** (graph-RAG agent + CLI). The M1 placeholder [`Retriever`]
-//! (agent-grounded `answer`) is retained in the [`legacy`] module so the
-//! not-yet-wired backend/mcp/eval/cli crates keep compiling until then.
+//! The agent-grounded graph-RAG query (`retrieveAndSynthesize`) lands here in
+//! **M5**: [`retrieve_and_synthesize`] binds this retrieval read path to the
+//! [`CopilotAgent`](kgpacks_agent::CopilotAgent) for grounded answer synthesis.
+//! The broader ENHANCEMENTS layer (graph reranker, cross-encoder, few-shot,
+//! Cypher-RAG, multi-document synthesis) remains a follow-up. The M1 placeholder
+//! [`Retriever`] (agent-grounded `answer`) is retained in the [`legacy`] module
+//! so the not-yet-wired backend/mcp/eval crates keep compiling.
 //!
 //! ## Schema contract
 //!
@@ -37,6 +39,7 @@ mod hybrid;
 mod legacy;
 mod retriever;
 pub mod row;
+mod synthesis;
 mod types;
 mod vector;
 
@@ -51,6 +54,10 @@ pub use hybrid::hybrid_retrieve;
 pub use retriever::{PackRetriever, RetrieverConfig};
 pub use types::{Embedder, HybridWeights, RetrieveMode, RetrieveOptions, RetrieverResult};
 pub use vector::{run_vector_search, vector_retrieve, ScoredNode, VectorConfig};
+
+// ── M5 graph-RAG query surface ─────────────────────────────────────────────
+
+pub use synthesis::{retrieve_and_synthesize, GraphRagAnswer};
 
 // ── M1 placeholder (retained for the not-yet-wired sibling crates) ──────────
 

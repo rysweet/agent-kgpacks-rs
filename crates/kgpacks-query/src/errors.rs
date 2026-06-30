@@ -46,6 +46,11 @@ pub enum QueryError {
     /// An embedding-generation failure surfaced by the injected embedder.
     #[error("embedding failed: {0}")]
     Embedding(String),
+
+    /// A graph-RAG synthesis failure surfaced by the agent during
+    /// [`crate::retrieve_and_synthesize`].
+    #[error(transparent)]
+    Agent(#[from] kgpacks_agent::AgentError),
 }
 
 /// Convenience result alias for fallible `kgpacks-query` operations.

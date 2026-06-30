@@ -10,14 +10,15 @@ workspace). This repository mirrors that module decomposition as a **Cargo
 workspace** and reuses the Simard Rust stack (`lbug` for the graph + vector/FTS
 engine, RustyClawd / Copilot SDK for the agent).
 
-> **Status:** M4 — retrieval parity (graph + vector + FTS). On top of the M2
-> graph store and the M3 ingestion pipeline, `kgpacks-query` ports the CORE
-> read path: cosine **vector** retrieval over a LadybugDB vector index, **hybrid**
-> retrieval that blends vector similarity with `LINKS_TO` **graph** proximity and
-> title-keyword **full-text** matches, and a standalone read-only **Cypher**
-> validator. The enhancement layer (cross-encoder reranking, Cypher-RAG,
-> synthesis) and the agent surfaces land with M5. See the
-> [roadmap](#porting-roadmap-m1m5) for what lands when.
+> **Status:** M5 — graph-RAG agent + CLI parity. On top of the M2 graph store,
+> M3 ingestion, and M4 retrieval, `kgpacks-agent` ports the Copilot-SDK agent
+> (answer synthesis, query expansion, multi-query, seed-article identification,
+> usage accounting, fail-closed error model) behind an injectable transport
+> seam, wired to the real RustyClawd / Copilot backend behind the `copilot`
+> feature. `kgpacks-query` adds the agent-grounded **graph-RAG query**
+> (`retrieve_and_synthesize`), and `kgpacks-cli` surfaces it end to end: `query`
+> prints ranked retrieval and `ask` prints a grounded, citation-bearing answer.
+> See the [roadmap](#porting-roadmap-m1m5) for what lands when.
 
 ## Target flow
 
@@ -102,10 +103,17 @@ workspace. As of M2, `kgpacks-db` consumes `lbug`; the others remain stubs.
   and the standalone read-only `validate_cypher` guard. The ENHANCEMENTS layer
   (graph reranker, cross-encoder, few-shot, Cypher-RAG, multi-document synthesis)
   and `retrieveAndSynthesize` are agent-tied and land with M5.
-- **M5 — Agent + surfaces.** Wire `kgpacks-agent` to the Copilot SDK via RustyClawd,
-  add the retrieval ENHANCEMENTS layer + `retrieveAndSynthesize`, and complete the
-  `kgpacks-cli`, `kgpacks-mcp` and `kgpacks-backend` surfaces, plus the `parity/`
-  harness against the reference.
+- **M5 — Graph-RAG agent + CLI parity (this milestone).** `kgpacks-agent` ports
+  `@kgpacks/agent`: the `CopilotAgent` (answer synthesis, query expansion,
+  multi-query, seed-article identification), the token/usage accountant, robust
+  fenced-JSON extraction, the prompt builders, and the fail-closed error model —
+  all behind an injectable `Transport` seam, with the real RustyClawd /
+  Copilot-SDK adapter behind the `copilot` feature. `kgpacks-query` adds the
+  agent-grounded graph-RAG query `retrieve_and_synthesize` (retrieval → grounded
+  synthesis), and `kgpacks-cli` surfaces the flow (`query` / `ask`). The broader
+  retrieval ENHANCEMENTS layer (cross-encoder, few-shot, Cypher-RAG, multi-doc
+  synthesis), the `kgpacks-mcp` / `kgpacks-backend` HTTP surfaces, and the
+  `parity/` harness remain follow-ups beyond this core flow.
 
 ## Build and test
 
@@ -120,15 +128,25 @@ cargo fmt   --all -- --check            # formatting gate (matches CI)
 cargo clippy --workspace --all-targets -- -D warnings  # lint gate (matches CI)
 ```
 
-Run the CLI (a stub `demo` wires one piece of every crate together):
+Run the CLI:
 
 ```bash
+# Smoke-test the pipeline shape (M1 stub):
 cargo run --bin kgpacks -- demo
 # ingested 1 chunk(s); pack=demo@0.1.0; score=1
+
+# Ranked retrieval over a built pack, as JSON:
+cargo run --bin kgpacks -- --packs-dir ./packs query rust-expert "what is ownership?" -k 5
+
+# Graph-RAG: retrieve, then synthesize a grounded answer (needs the `copilot`
+# feature to reach the real Copilot backend):
+cargo run --bin kgpacks --features copilot -- --packs-dir ./packs ask rust-expert "what is ownership?"
 ```
 
-CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the same four gates
-on every push and pull request, with all GitHub Actions pinned to commit SHAs.
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the four default gates
+(build / test / fmt / clippy) plus a dedicated `--features copilot` build+clippy step
+(so the real RustyClawd transport stays compiled and linted), with all GitHub Actions
+pinned to commit SHAs.
 
 ## Graph store + packs (M2)
 
@@ -302,6 +320,60 @@ notes carried from the reference: the keyword signal is a title `CONTAINS` match
 (not an FTS-index procedure), and `validate_cypher` is exported as a standalone
 guard — the CORE read path itself never routes user text into Cypher (it runs
 fixed, parameter-bound vector/graph queries).
+
+## Graph-RAG agent + CLI (M5)
+
+`kgpacks-agent` ports `@kgpacks/agent`: a `CopilotAgent` wrapping a Copilot
+session through an injectable `Transport` seam, exposing the four ported
+operations plus usage accounting.
+
+```rust
+use kgpacks_agent::{CopilotAgent, CopilotAgentOptions, SynthesisRequest, ContextChunk};
+
+let mut agent = CopilotAgent::with_transport(transport, CopilotAgentOptions::default());
+agent.start()?;
+let result = agent.synthesize_answer(&SynthesisRequest {
+    question: "What is HNSW?".into(),
+    context: vec![ContextChunk::new("doc:1", "HNSW is a navigable small-world graph.")],
+    ..SynthesisRequest::default()
+})?;
+assert_eq!(result.metadata.cited_ids, ["doc:1"]); // citations derived from the answer
+agent.stop()?;
+```
+
+The agent **fails closed** (returns shape-checked data or an `AgentError`), pins
+the held-constant model, bounds context to cap cost/DoS surface, and redacts
+BYOK secrets from surfaced transport errors. The real Copilot adapter
+(`copilot_transport`, behind the `copilot` feature) wires the seam to
+`rustyclawd-core`'s Copilot backend; every unit test injects a mock instead, so
+the suite is fully offline.
+
+`kgpacks-query::retrieve_and_synthesize` is the **graph-RAG query**: it runs M4
+retrieval, hands the ranked sections to the agent as citation-tagged context,
+and returns the grounded answer plus its supporting hits. `kgpacks-cli` surfaces
+it (`query` → ranked JSON, `ask` → grounded answer JSON).
+
+Each reference module maps to a Rust module proven by a mirroring parity test:
+
+| Reference (`@kgpacks/agent` / `@kgpacks/cli`) | Rust module                                  | Parity test                          |
+| --------------------------------------------- | -------------------------------------------- | ------------------------------------ |
+| `agent/src/copilot-agent.ts`                  | `kgpacks-agent::copilot_agent`               | `agent/tests/copilot_agent.rs`       |
+| `agent/src/json.ts`                           | `kgpacks-agent::json`                        | `agent/tests/json.rs`                |
+| `agent/src/usage.ts`                          | `kgpacks-agent::usage`                       | `agent/tests/usage.rs`               |
+| `agent/src/transport.ts` (+ `types.ts`)       | `kgpacks-agent::{transport,types}`           | `agent/tests/transport_contract.rs`  |
+| `agent/src/{prompts,errors,constants}.ts`     | `kgpacks-agent::{prompts,errors,constants}`  | exercised by the above               |
+| `query/src/retriever.ts` `retrieveAndSynthesize` | `kgpacks-query::synthesis`                | `query/tests/synthesis.rs`           |
+| `cli/src/commands/query.ts` (+ `ask` flow)    | `kgpacks-cli` (`query` / `ask`)              | `cli/tests/e2e.rs`, unit tests       |
+
+The agent parity suite mirrors the reference's `agent/test/*` structurally
+(valid shapes, fence-stripping, citation derivation, usage accounting,
+lifecycle, fail-closed errors) against a mock transport, and the CLI `e2e` test
+drives the full `build pack → vector retrieval → graph-RAG query` flow through
+the actual command surface offline. Scope notes: the real transport is gated
+behind the non-default `copilot` feature (compiled + linted in a dedicated CI
+step) so the default gates stay lean and hermetic; the retrieval ENHANCEMENTS
+layer, the MCP/backend HTTP surfaces, and the `parity/` harness remain
+follow-ups beyond this core flow.
 
 ## License
 

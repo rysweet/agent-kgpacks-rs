@@ -16,3 +16,4 @@ regex.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+kgpacks-agent = { workspace = true }

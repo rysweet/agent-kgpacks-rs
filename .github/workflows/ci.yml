@@ -47,3 +47,16 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Copilot feature (real RustyClawd transport) — lint + test
+        # The agent's real Copilot transport is gated behind the non-default
+        # `copilot` feature so the gates above stay lean and fully offline. This
+        # step compiles + lints + smoke-tests that wiring (in `kgpacks-agent`,
+        # which has no LadybugDB dependency, so it is fast) so it never bitrots.
+        # It fetches the SHA-pinned RustyClawd git dependency; the default gates
+        # above do not. (`kgpacks-cli`'s thin `copilot` forwarder is covered by
+        # the default-feature build; enabling it there would rebuild the lbug
+        # engine via feature unification, so it is intentionally excluded here.)
+        run: |
+          cargo clippy -p kgpacks-agent --all-targets --features copilot --locked -- -D warnings
+          cargo test -p kgpacks-agent --features copilot --locked

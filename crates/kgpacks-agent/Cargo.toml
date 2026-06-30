@@ -7,4 +7,19 @@ repository.workspace = true
 authors.workspace = true
 description = "Graph-RAG agent (GitHub Copilot SDK / RustyClawd) for agent-kgpacks-rs."
 
+[features]
+# Off by default so the workspace's build/test/clippy gates stay lean and fully
+# offline. When enabled, wires the agent's transport seam to the real Copilot
+# backend via `rustyclawd-core` (see `src/transport.rs`); CI compiles + lints
+# this feature in a dedicated step.
+default = []
+copilot = ["dep:rustyclawd-core", "dep:tokio"]
+
 [dependencies]
+thiserror.workspace = true
+serde_json.workspace = true
+rustyclawd-core = { workspace = true, optional = true }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time"], optional = true }
+
+[dev-dependencies]
+serde_json.workspace = true
