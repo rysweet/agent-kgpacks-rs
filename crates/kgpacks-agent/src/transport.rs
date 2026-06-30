@@ -12,7 +12,8 @@
 //! all input as untrusted data), so poisoned context can influence wording but
 //! cannot trigger actions or exfiltration.
 
-use rustyclawd_core::client::{Client, Config, ContentBlock, CreateMessageRequest, Message};
+use rustyclawd_core::client::{Client, ContentBlock, CreateMessageRequest, Message};
+use std::time::Duration;
 use tokio::runtime::Runtime;
 
 use crate::types::{
@@ -47,7 +48,8 @@ impl Transport for CopilotTransport {
             .enable_all()
             .build()
             .map_err(|err| TransportError::new(err.to_string()))?;
-        let client = Client::new(Config::new_copilot())
+        let client = runtime
+            .block_on(Client::new_copilot())
             .map_err(|err| TransportError::new(err.to_string()))?;
         Ok(Box::new(CopilotSession {
             runtime,
@@ -72,7 +74,7 @@ impl TransportSession for CopilotSession {
     fn send(
         &self,
         prompt: &str,
-        _timeout_ms: Option<u64>,
+        timeout_ms: Option<u64>,
     ) -> Result<TransportResponse, TransportError> {
         let request = CreateMessageRequest::new(
             self.model.clone(),
@@ -81,10 +83,31 @@ impl TransportSession for CopilotSession {
         )
         .with_system(SECURITY_SYSTEM_MESSAGE.to_string());
 
-        let response = self
-            .runtime
-            .block_on(self.client.create_message(request))
-            .map_err(|err| TransportError::new(err.to_string()))?;
+        // Honor the agent's per-call/default timeout (a documented cost/DoS knob)
+        // by racing the request against it; the backend also enforces its own
+        // ceiling. On elapse we surface a timeout error rather than block.
+        let response = self.runtime.block_on(async {
+            match timeout_ms {
+                Some(ms) => {
+                    match tokio::time::timeout(
+                        Duration::from_millis(ms),
+                        self.client.create_message(request),
+                    )
+                    .await
+                    {
+                        Ok(result) => result.map_err(|err| TransportError::new(err.to_string())),
+                        Err(_) => Err(TransportError::new(format!(
+                            "Copilot request timed out after {ms} ms"
+                        ))),
+                    }
+                }
+                None => self
+                    .client
+                    .create_message(request)
+                    .await
+                    .map_err(|err| TransportError::new(err.to_string())),
+            }
+        })?;
 
         let content = response
             .content

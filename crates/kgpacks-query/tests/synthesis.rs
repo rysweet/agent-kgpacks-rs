@@ -104,6 +104,7 @@ fn graph_rag_query_retrieves_then_synthesizes_a_grounded_answer() {
             mode: RetrieveMode::Hybrid,
             weights: None,
         },
+        false,
     )
     .unwrap();
 
@@ -111,11 +112,17 @@ fn graph_rag_query_retrieves_then_synthesizes_a_grounded_answer() {
 
     // Retrieval produced grounding, and the agent synthesized over it.
     assert!(!answer.results.is_empty(), "retrieval returned sections");
+    assert_eq!(
+        answer.results.len(),
+        2,
+        "both fixture sections were retrieved"
+    );
     assert!(answer.answer.contains("Grounded answer"));
     assert_eq!(answer.model, DEFAULT_SYNTHESIS_MODEL);
     assert_eq!(answer.usage, Usage::new(7, 11, 0));
 
-    // The cited id is the top retrieved section, and it is one of the hits.
+    // multidoc = false ⇒ only the top-ranked section is grounded/cited, even
+    // though the full ranked list is returned.
     assert_eq!(answer.cited_ids.len(), 1);
     let cited = &answer.cited_ids[0];
     assert_eq!(cited, &answer.results[0].id);

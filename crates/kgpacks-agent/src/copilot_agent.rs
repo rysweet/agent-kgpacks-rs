@@ -250,16 +250,20 @@ impl CopilotAgent {
 
 /// Deterministically bound context to contain cost / DoS surface (head
 /// truncation of chunks and total characters).
+///
+/// Character counts mirror the reference's JavaScript `String.length` /
+/// `.slice()`, which count UTF-16 code units — so the caps are applied in UTF-16
+/// units here too (identical to byte/char counts for the common BMP case).
 fn bound_context(context: &[ContextChunk]) -> Vec<ContextChunk> {
     let mut bounded = Vec::new();
-    let mut total_chars = 0usize;
+    let mut total_units = 0usize;
     for chunk in context.iter().take(MAX_CONTEXT_CHUNKS) {
-        let text: String = chunk.text.chars().take(MAX_CHUNK_CHARS).collect();
-        let len = text.chars().count();
-        if total_chars + len > MAX_CONTEXT_CHARS {
+        let text = truncate_utf16(&chunk.text, MAX_CHUNK_CHARS);
+        let units: usize = text.chars().map(char::len_utf16).sum();
+        if total_units + units > MAX_CONTEXT_CHARS {
             break;
         }
-        total_chars += len;
+        total_units += units;
         bounded.push(ContextChunk {
             id: chunk.id.clone(),
             text,
@@ -267,6 +271,22 @@ fn bound_context(context: &[ContextChunk]) -> Vec<ContextChunk> {
         });
     }
     bounded
+}
+
+/// Truncate `text` to at most `max_units` UTF-16 code units, never splitting a
+/// `char` (mirrors `text.slice(0, max_units)` for the in-range cases).
+fn truncate_utf16(text: &str, max_units: usize) -> String {
+    let mut units = 0usize;
+    let mut out = String::new();
+    for ch in text.chars() {
+        let w = ch.len_utf16();
+        if units + w > max_units {
+            break;
+        }
+        units += w;
+        out.push(ch);
+    }
+    out
 }
 
 /// Replace every known secret substring with a redaction marker.

@@ -21,12 +21,16 @@ use kgpacks_eval::{EvalCase, Harness};
 use kgpacks_ingestion::Ingestor;
 use kgpacks_packs::PackManifest;
 use kgpacks_query::{
-    retrieve_and_synthesize, PackRetriever, RetrieveMode, RetrieveOptions, Retriever, DEFAULT_K,
+    retrieve_and_synthesize, PackRetriever, RetrieveMode, RetrieveOptions, Retriever,
 };
 
 /// Filename of the LadybugDB graph store inside a pack directory (matches
 /// `kgpacks_packs::GRAPH_STORE_FILENAME`).
 const DB_FILENAME: &str = "graph.lbug";
+
+/// Default number of results retrieved when `-k` is omitted (matches the
+/// reference CLI's `DEFAULT_K = 5`, distinct from the library's `DEFAULT_K`).
+const CLI_DEFAULT_K: usize = 5;
 
 /// Environment variable naming the directory that holds installed packs.
 const PACKS_DIR_ENV: &str = "KGPACKS_PACKS_DIR";
@@ -85,7 +89,7 @@ fn help_text() -> String {
     [
         "kgpacks <command> [--packs-dir <dir>]",
         "  query <pack> <question> [-k <n>] [--mode vector|hybrid]   ranked retrieval as JSON",
-        "  ask   <pack> <question> [-k <n>] [--mode vector|hybrid]   graph-RAG answer as JSON",
+        "  ask   <pack> <question> [-k <n>] [--mode vector|hybrid] [--multidoc]   graph-RAG answer as JSON",
         "  demo                                                      smoke-test the pipeline",
         "  version                                                   print the version",
     ]
@@ -125,12 +129,14 @@ struct QueryArgs {
     question: String,
     k: usize,
     mode: RetrieveMode,
+    multidoc: bool,
 }
 
 fn parse_query_args(args: &[String]) -> Result<QueryArgs, String> {
     let mut positionals: Vec<String> = Vec::new();
-    let mut k = DEFAULT_K;
+    let mut k = CLI_DEFAULT_K;
     let mut mode = RetrieveMode::default();
+    let mut multidoc = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -157,6 +163,12 @@ fn parse_query_args(args: &[String]) -> Result<QueryArgs, String> {
                 };
                 i += 2;
             }
+            // `ask` only: ground synthesis on ALL retrieved sections instead of
+            // just the top one (mirrors the reference `enableMultidoc`).
+            "--multidoc" => {
+                multidoc = true;
+                i += 1;
+            }
             other => {
                 positionals.push(other.to_string());
                 i += 1;
@@ -176,6 +188,7 @@ fn parse_query_args(args: &[String]) -> Result<QueryArgs, String> {
         question,
         k,
         mode,
+        multidoc,
     })
 }
 
@@ -245,9 +258,14 @@ fn cmd_ask(
 
     let mut agent = CopilotAgent::with_transport(make_transport(), CopilotAgentOptions::default());
     agent.start().map_err(|e| e.to_string())?;
-    let answer =
-        retrieve_and_synthesize(&retriever, &agent, &parsed.question, &options_for(&parsed))
-            .map_err(|e| e.to_string());
+    let answer = retrieve_and_synthesize(
+        &retriever,
+        &agent,
+        &parsed.question,
+        &options_for(&parsed),
+        parsed.multidoc,
+    )
+    .map_err(|e| e.to_string());
     // Always stop the agent, even if synthesis failed, so the transport is shut down.
     let stop = agent.stop().map_err(|e| e.to_string());
     let answer = answer?;

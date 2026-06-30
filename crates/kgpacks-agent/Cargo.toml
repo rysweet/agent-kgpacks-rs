@@ -19,7 +19,7 @@ copilot = ["dep:rustyclawd-core", "dep:tokio"]
 thiserror.workspace = true
 serde_json.workspace = true
 rustyclawd-core = { workspace = true, optional = true }
-tokio = { version = "1", features = ["rt", "rt-multi-thread"], optional = true }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time"], optional = true }
 
 [dev-dependencies]
 serde_json.workspace = true

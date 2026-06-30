@@ -37,18 +37,30 @@ pub struct GraphRagAnswer {
 /// Run the graph-RAG query: retrieve the top-k sections for `question`, then ask
 /// the (already-started) `agent` to synthesize a grounded answer over them.
 ///
-/// The retrieved sections are passed as [`ContextChunk`]s tagged by their node
-/// id, so the agent can cite them; the cited ids are surfaced on the result.
-/// Retrieval failures and agent failures both surface as [`crate::QueryError`].
+/// Grounding mirrors the reference `synthesizeFromResults`: by default
+/// (`multidoc = false`) only the **top-ranked** section is passed to the agent as
+/// context; `multidoc = true` passes all retrieved sections. Either way, the full
+/// ranked hit list is returned on [`GraphRagAnswer::results`]. The retrieved
+/// sections are tagged by their node id so the agent can cite them; the cited ids
+/// are surfaced on the result. Retrieval and agent failures both surface as
+/// [`crate::QueryError`].
 pub fn retrieve_and_synthesize<E: Embedder>(
     retriever: &PackRetriever<'_, '_, E>,
     agent: &CopilotAgent,
     question: &str,
     opts: &RetrieveOptions,
+    multidoc: bool,
 ) -> Result<GraphRagAnswer> {
     let results = retriever.retrieve(question, opts)?;
 
-    let context: Vec<ContextChunk> = results
+    // Mirror the reference default: ground on the single top result unless
+    // multi-document synthesis is explicitly requested.
+    let grounding = if multidoc {
+        &results[..]
+    } else {
+        &results[..results.len().min(1)]
+    };
+    let context: Vec<ContextChunk> = grounding
         .iter()
         .map(|hit| ContextChunk::new(hit.id.clone(), hit.content.clone()))
         .collect();
