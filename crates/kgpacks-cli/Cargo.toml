@@ -7,6 +7,13 @@ repository.workspace = true
 authors.workspace = true
 description = "Command-line interface for agent-kgpacks-rs."
 
+[features]
+# Build the `kgpacks` binary with the real Copilot transport for the `ask`
+# (graph-RAG) command. Off by default so the workspace gates stay lean/offline;
+# the `ask` flow is proven by tests via an injected mock transport.
+default = []
+copilot = ["kgpacks-agent/copilot"]
+
 [dependencies]
 kgpacks-agent = { workspace = true }
 kgpacks-db = { workspace = true }
@@ -15,6 +22,14 @@ kgpacks-eval = { workspace = true }
 kgpacks-ingestion = { workspace = true }
 kgpacks-packs = { workspace = true }
 kgpacks-query = { workspace = true }
+serde_json.workspace = true
+
+[dev-dependencies]
+kgpacks-agent = { workspace = true }
+kgpacks-db = { workspace = true }
+kgpacks-embeddings = { workspace = true }
+serde_json.workspace = true
+tempfile.workspace = true
 
 [[bin]]
 name = "kgpacks"
