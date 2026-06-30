@@ -20,6 +20,11 @@ pub use error::{Error, Result};
 /// LadybugDB value type, re-exported for use in bound query parameters and rows.
 pub use lbug::Value;
 
+/// LadybugDB logical type, re-exported so callers can build typed list/array
+/// bound parameters (e.g. `Value::List(LogicalType::String, …)` for an
+/// `IN $titles` predicate).
+pub use lbug::LogicalType;
+
 /// Handle to the knowledge-graph store backing nodes, edges, vectors and
 /// full-text indexes.
 ///

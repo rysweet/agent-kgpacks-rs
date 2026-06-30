@@ -10,9 +10,11 @@ workspace). This repository mirrors that module decomposition as a **Cargo
 workspace** and reuses the Simard Rust stack (`lbug` for the graph + vector/FTS
 engine, RustyClawd / Copilot SDK for the agent).
 
-> **Status:** M2 — graph store + schema parity. `kgpacks-db` is wired to
-> LadybugDB (`lbug`) and `kgpacks-packs` builds/loads a pack over the graph
-> store. The remaining crates are compiling stubs. See the
+> **Status:** M3 — ingestion pipeline parity. On top of the M2 graph store,
+> `kgpacks-ingestion` ports the fetch → chunk → extract → embed → load pipeline
+> (content sources, the expansion state machine, link discovery, and LLM
+> extraction sanitization) and `kgpacks-embeddings` ports chunking and embedding
+> generation. The retrieval/agent crates remain compiling stubs. See the
 > [roadmap](#porting-roadmap-m1m5) for what lands when.
 
 ## Target flow
@@ -82,8 +84,14 @@ workspace. As of M2, `kgpacks-db` consumes `lbug`; the others remain stubs.
   Cypher, extension loading, idempotent close), and `kgpacks-packs` ports the
   manifest schema + SemVer versioning and builds/loads a pack over the graph
   store. Vector/FTS indexing is deferred to M4.
-- **M3 — Ingestion + embeddings.** Implement `kgpacks-ingestion` (fetch, chunk,
-  extract, expand) and real embeddings in `kgpacks-embeddings`.
+- **M3 — Ingestion + embeddings (landed).** `kgpacks-embeddings` ports the
+  sentence-aware chunker and an embedding generator (a deterministic,
+  retrieval-contract-preserving model standing in for the BGE transformer so CI
+  stays hermetic), and `kgpacks-ingestion` ports the working-store schema,
+  pluggable content sources, LLM-extraction sanitization (gated behind a
+  mockable `Extractor` trait), link discovery, the claim/heartbeat/reclaim work
+  queue, the per-article processor, and the `process_one` orchestrator step.
+  Embeddings are generated and stored; the HNSW vector index over them is M4.
 - **M4 — Hybrid retrieval.** Implement `kgpacks-query` vector + FTS retrieval,
   cross-encoder reranking and safe Cypher-RAG generation.
 - **M5 — Agent + surfaces.** Wire `kgpacks-agent` to the Copilot SDK via RustyClawd
@@ -151,6 +159,65 @@ build_pack("/tmp/rust-expert", &manifest, &content)?;
 let loaded = load_pack("/tmp/rust-expert")?;
 assert_eq!(loaded.graph_stats()?["articles"], 1.0);
 ```
+
+## Ingestion pipeline (M3)
+
+`kgpacks-ingestion` drives the **build-pack → ingest** flow over the working
+store: open a store, seed it, and process articles fetched from a
+[`ContentSource`] through chunking, embedding, optional LLM extraction, and the
+expansion state machine.
+
+```rust
+use kgpacks_embeddings::Embedder;
+use kgpacks_ingestion::{
+    ArticleInfo, ExpansionConfig, MapContentSource, Orchestrator, Article,
+};
+
+// An in-memory content source (real Wikipedia/web sources land later).
+let source = MapContentSource::new().with_article(Article {
+    title: "Rust".into(),
+    content: "Rust is a systems language.\n\n## Features\nOwnership and borrowing.".into(),
+    links: vec!["Cargo".into()],
+    categories: vec!["Programming languages".into()],
+    source_type: "memory".into(),
+    ..Article::default()
+});
+
+let orchestrator = Orchestrator::in_memory(ExpansionConfig::default())?;
+orchestrator.initialize_seeds(&["Rust".into()], "Programming")?;
+
+let embedder = Embedder::bge(); // 768-d, deterministic (matches the store schema)
+let conn = orchestrator.connect()?;
+let (_title, success, _err) = orchestrator.process_claimed(
+    &conn,
+    &ArticleInfo::new("Rust", 0).with_category("Programming"),
+    &source,
+    &embedder,
+    None, // or Some(&extractor) to also load entities/facts/relationships
+);
+assert!(success);
+```
+
+The crate is a one-to-one port of the reference ingestion modules; each maps to
+a Rust module proven by a mirroring parity test:
+
+| Reference (`agent-kgpacks`)              | Rust module                              | Parity test                          |
+| ---------------------------------------- | ---------------------------------------- | ------------------------------------ |
+| `embeddings/chunker.py`                  | `kgpacks-embeddings::chunker`            | `kgpacks-embeddings/tests/chunker.rs` |
+| `embeddings/generator.py`                | `kgpacks-embeddings` (`Embedder`)        | `kgpacks-embeddings/tests/generator.rs` |
+| `extraction/llm_extractor.py`            | `kgpacks-ingestion::extraction`          | `kgpacks-ingestion/tests/extraction.rs` |
+| `expansion/link_discovery.py`            | `kgpacks-ingestion::link_discovery`      | `kgpacks-ingestion/tests/link_discovery.rs` |
+| `expansion/work_queue.py`                | `kgpacks-ingestion::work_queue`          | `kgpacks-ingestion/tests/work_queue.rs` |
+| `expansion/orchestrator.py`              | `kgpacks-ingestion::orchestrator`        | `kgpacks-ingestion/tests/orchestrator.rs` |
+| `expansion/processor.py` + `database/loader.py` | `kgpacks-ingestion::processor`    | `kgpacks-ingestion/tests/processor.rs` |
+| `schema/ryugraph_schema.py`              | `kgpacks-ingestion::schema`              | exercised by the above               |
+
+LLM extraction is gated behind the `Extractor` trait (`MockExtractor` /
+`JsonExtractor` for tests), and the embedder is a deterministic stand-in for the
+BGE transformer, so the whole suite runs offline. Two documented working-store
+deviations from the reference: timestamps are `INT64` epoch-millis (not
+`TIMESTAMP`), and the embedding columns are populated but the HNSW vector index
+over them is deferred to M4.
 
 ## License
 
