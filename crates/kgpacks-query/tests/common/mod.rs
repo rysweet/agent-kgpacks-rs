@@ -46,6 +46,21 @@ impl Embedder for FixedQueryEmbedder {
     }
 }
 
+/// A fixed embedder that counts how many query texts it has embedded, so a test
+/// can assert the read path embeds the query exactly once per `retrieve` call
+/// (parity with the reference `retriever.test.ts`, which asserts one embed call).
+pub struct CountingEmbedder {
+    pub vector: Vec<f32>,
+    pub calls: std::rc::Rc<std::cell::Cell<usize>>,
+}
+
+impl Embedder for CountingEmbedder {
+    fn generate_query(&self, queries: &[&str]) -> Result<Vec<Vec<f32>>> {
+        self.calls.set(self.calls.get() + queries.len());
+        Ok(queries.iter().map(|_| self.vector.clone()).collect())
+    }
+}
+
 /// Build a `FLOAT[DIM]` array bound parameter for an embedding column insert.
 pub fn float_array(v: &[f32]) -> Value {
     Value::Array(

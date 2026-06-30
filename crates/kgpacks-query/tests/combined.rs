@@ -193,3 +193,145 @@ fn retrieves_over_a_string_keyed_pack_schema() {
         score_of(&hres, "sec-beta")
     );
 }
+
+// ── Custom node table + vector index (config is actually interpolated) ───────
+
+/// Build a NON-default schema (`Doc` node table, `vec_idx` index) so a retriever
+/// configured with a custom [`RetrieverConfig`] is proven to interpolate those
+/// names into all three issued queries (`QUERY_VECTOR_INDEX`, the `LINKS_TO`
+/// traversal, and the title-keyword match) rather than the defaults.
+fn setup_custom(conn: &Connection<'_>) {
+    conn.load_extension("vector").expect("load vector ext");
+    conn.run(
+        "CREATE NODE TABLE Doc(id INT64, title STRING, content STRING, \
+         embedding FLOAT[768], PRIMARY KEY(id))",
+    )
+    .expect("create Doc table");
+    conn.run("CREATE REL TABLE LINKS_TO(FROM Doc TO Doc)")
+        .expect("create LINKS_TO table");
+    for (id, title, emb) in [(1i64, "Alpha Doc", one_hot(0)), (2, "Beta Doc", one_hot(1))] {
+        conn.run_params(
+            "CREATE (:Doc {id: $id, title: $title, content: $content, embedding: $emb})",
+            vec![
+                ("id", Value::Int64(id)),
+                ("title", Value::String(title.into())),
+                ("content", Value::String(format!("{title} body"))),
+                ("emb", float_array(&emb)),
+            ],
+        )
+        .expect("insert Doc");
+    }
+    conn.run_params(
+        "MATCH (a:Doc {id: $a}), (b:Doc {id: $b}) CREATE (a)-[:LINKS_TO]->(b)",
+        vec![("a", Value::Int64(1)), ("b", Value::Int64(2))],
+    )
+    .expect("link docs");
+    conn.run("CALL CREATE_VECTOR_INDEX('Doc', 'vec_idx', 'embedding', metric := 'cosine')")
+        .expect("create custom-named vector index");
+}
+
+#[test]
+fn uses_a_custom_node_table_and_vector_index() {
+    let db = Database::in_memory().expect("db");
+    let conn = db.connect().expect("conn");
+    setup_custom(&conn);
+
+    let retriever = PackRetriever::with_embedder(
+        &conn,
+        FixedQueryEmbedder { vector: one_hot(0) },
+        RetrieverConfig {
+            node_table: "Doc".to_string(),
+            vector_index: "vec_idx".to_string(),
+            stop_words: kgpacks_query::default_stop_words(),
+        },
+    );
+
+    // All three signals must resolve against the custom names: doc 1 = vector 0.5
+    // (QUERY_VECTOR_INDEX('Doc','vec_idx')) + keyword 0.14 ("alpha" CONTAINS its
+    // title) = 0.64; doc 2 = graph 0.15 (LINKS_TO over Doc). A wrong table/index
+    // name would error or return nothing.
+    let results = retriever
+        .retrieve(
+            "alpha story",
+            &RetrieveOptions {
+                k: Some(2),
+                mode: RetrieveMode::Hybrid,
+                weights: None,
+            },
+        )
+        .expect("hybrid retrieve over custom schema");
+
+    assert_eq!(results[0].id, "1");
+    assert!(
+        (score_of(&results, "1") - 0.64).abs() < 1e-4,
+        "doc1 = {}",
+        score_of(&results, "1")
+    );
+    assert!(
+        (score_of(&results, "2") - 0.15).abs() < 1e-4,
+        "doc2 = {}",
+        score_of(&results, "2")
+    );
+}
+
+// ── Graph-seed cap: only the first MAX_GRAPH_SEEDS (3) scored nodes seed ──────
+
+/// Five vector hits with strictly decreasing cosine (1.0, 0.9, 0.8, 0.7 to
+/// `one_hot(0)`), so insertion order is deterministic, plus two orthogonal nodes
+/// reached only via `LINKS_TO`. Edge `1 -> 6` (seed) and `4 -> 7` (NOT a seed):
+/// node 6 must receive a graph boost; node 7 must not, because node 4 is the
+/// fourth scored node and the reference caps graph seeds at the first three.
+fn setup_seed_cap(conn: &Connection<'_>) {
+    conn.load_extension("vector").expect("load vector ext");
+    common::create_int_schema(conn);
+    // sqrt(1 - cos^2) chosen so each mix vector is unit-norm with the stated cosine.
+    common::insert_int_section(conn, 1, "N1", "c", &one_hot(0)); // cos 1.0
+    common::insert_int_section(conn, 2, "N2", "c", &mix(0, 1, 0.9, 0.435_889_9)); // cos 0.9
+    common::insert_int_section(conn, 3, "N3", "c", &mix(0, 2, 0.8, 0.6)); // cos 0.8
+    common::insert_int_section(conn, 4, "N4", "c", &mix(0, 3, 0.7, 0.714_142_8)); // cos 0.7
+    common::insert_int_section(conn, 5, "N5", "c", &one_hot(8)); // cos 0
+    common::insert_int_section(conn, 6, "N6", "c", &one_hot(9)); // neighbor of seed 1
+    common::insert_int_section(conn, 7, "N7", "c", &one_hot(10)); // neighbor of non-seed 4
+    common::link_int(conn, 1, 6);
+    common::link_int(conn, 4, 7);
+    common::create_vector_index(conn);
+}
+
+#[test]
+fn graph_seeds_are_capped_at_the_first_three_scored_nodes() {
+    let db = Database::in_memory().expect("db");
+    let conn = db.connect().expect("conn");
+    setup_seed_cap(&conn);
+
+    let retriever = PackRetriever::with_embedder(
+        &conn,
+        FixedQueryEmbedder { vector: one_hot(0) },
+        RetrieverConfig::default(),
+    );
+    // "qqqq" matches no title, so the keyword signal is silent and only vector +
+    // graph contribute.
+    let results = retriever
+        .retrieve(
+            "qqqq",
+            &RetrieveOptions {
+                k: Some(10),
+                mode: RetrieveMode::Hybrid,
+                weights: None,
+            },
+        )
+        .expect("hybrid retrieve");
+
+    // Node 6 (neighbor of seed node 1) gets the graph boost.
+    assert!(
+        (score_of(&results, "6") - 0.15).abs() < 1e-4,
+        "n6 = {}",
+        score_of(&results, "6")
+    );
+    // Node 7 (neighbor of node 4, the FOURTH scored node) gets nothing — node 4
+    // is past the 3-seed cap, so its edges are never traversed.
+    assert!(
+        score_of(&results, "7").abs() < 1e-4,
+        "n7 = {}",
+        score_of(&results, "7")
+    );
+}

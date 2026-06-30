@@ -41,6 +41,12 @@ pub struct ScoredNode {
 /// the caller can fall back to [`DEFAULT_SIMILARITY`] (mirroring the TypeScript
 /// `Number(row.distance)` + `Number.isFinite` guard, where a missing/non-numeric
 /// distance must NOT poison the score with `NaN`).
+///
+/// `QUERY_VECTOR_INDEX` always emits a `DOUBLE` distance, so in practice only the
+/// `Double` arm fires; the other numeric arms are defensive so a distance that
+/// ever arrives in another integer/float form still yields its real value rather
+/// than the [`DEFAULT_SIMILARITY`] fallback. Non-numeric values (NULL, strings,
+/// nodes, …) return `None`.
 fn value_to_f64(value: &Value) -> Option<f64> {
     match value {
         Value::Double(d) => Some(*d),
@@ -49,10 +55,21 @@ fn value_to_f64(value: &Value) -> Option<f64> {
         Value::Int32(n) => Some(f64::from(*n)),
         Value::Int16(n) => Some(f64::from(*n)),
         Value::Int8(n) => Some(f64::from(*n)),
+        Value::Int128(n) => Some(*n as f64),
         Value::UInt64(n) => Some(*n as f64),
         Value::UInt32(n) => Some(f64::from(*n)),
+        Value::UInt16(n) => Some(f64::from(*n)),
+        Value::UInt8(n) => Some(f64::from(*n)),
         _ => None,
     }
+}
+
+/// Bind `k` as the procedure's `INT64` result-count parameter, saturating at
+/// [`i64::MAX`] rather than wrapping to a negative limit if `k` somehow exceeds
+/// the `i64` range (the [`crate::PackRetriever`] entry point rejects such a `k`
+/// outright; this keeps the standalone functions fail-safe too).
+pub(crate) fn k_limit(k: usize) -> Value {
+    Value::Int64(i64::try_from(k).unwrap_or(i64::MAX))
 }
 
 /// Build the FLOAT-list bound parameter for the query embedding.
@@ -94,10 +111,7 @@ pub fn run_vector_search<E: Embedder + ?Sized>(
     );
     let rows = conn.run_params(
         &cypher,
-        vec![
-            ("emb", embedding_param(&embedding)),
-            ("k", Value::Int64(k as i64)),
-        ],
+        vec![("emb", embedding_param(&embedding)), ("k", k_limit(k))],
     )?;
 
     Ok(rows

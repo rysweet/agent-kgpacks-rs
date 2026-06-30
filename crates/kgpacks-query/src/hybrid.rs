@@ -21,7 +21,7 @@ use crate::constants::{
 use crate::errors::Result;
 use crate::row::{coerce_content, to_id_string};
 use crate::types::{Embedder, HybridWeights, RetrieverResult};
-use crate::vector::{run_vector_search, VectorConfig};
+use crate::vector::{k_limit, run_vector_search, VectorConfig};
 
 /// First-seen content + raw key for a node, kept so the final ranking can render
 /// content and the graph seeds can re-bind their primary key.
@@ -80,10 +80,8 @@ pub fn hybrid_retrieve<E: Embedder + ?Sized>(
         let Some(seed_raw) = acc.meta.get(&seed_id).map(|m| m.raw_id.clone()) else {
             continue;
         };
-        let neighbors = conn.run_params(
-            &graph_cypher,
-            vec![("id", seed_raw), ("limit", Value::Int64(k as i64))],
-        )?;
+        let neighbors =
+            conn.run_params(&graph_cypher, vec![("id", seed_raw), ("limit", k_limit(k))])?;
         for row in neighbors {
             let raw_id = row
                 .get("id")
@@ -118,7 +116,7 @@ pub fn hybrid_retrieve<E: Embedder + ?Sized>(
             &keyword_cypher,
             vec![
                 ("kw", Value::String(keyword.to_string())),
-                ("limit", Value::Int64(k as i64)),
+                ("limit", k_limit(k)),
             ],
         )?;
         for row in hits {

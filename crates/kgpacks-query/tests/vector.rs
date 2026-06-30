@@ -134,3 +134,35 @@ fn rejects_a_non_positive_k() {
         .expect_err("k = 0 must be rejected");
     assert!(matches!(err, kgpacks_query::QueryError::InvalidArgument(_)));
 }
+
+#[test]
+fn loads_the_vector_extension_on_a_fresh_read_connection() {
+    // Build + index on disk with a writer connection (which loads the extension
+    // itself), then reopen a FRESH database/connection that has NOT loaded any
+    // extension and query through the retriever. This locks `ensure_extensions`:
+    // if it were removed, `QUERY_VECTOR_INDEX` would not resolve on the reader.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("pack.lbug");
+
+    {
+        let db = Database::open(&path).expect("open writer db");
+        let conn = db.connect().expect("writer conn");
+        setup(&conn); // loads vector, creates schema + index, inserts rows
+                      // writer db/conn drop here, flushing the pack (incl. the index) to disk.
+    }
+
+    let db = Database::open(&path).expect("reopen reader db");
+    let conn = db.connect().expect("reader conn"); // no manual load_extension here
+
+    let results = retriever(&conn)
+        .retrieve(
+            "anything",
+            &RetrieveOptions {
+                k: Some(1),
+                ..Default::default()
+            },
+        )
+        .expect("retrieve must load the vector extension on the read connection itself");
+
+    assert_eq!(results[0].id, "1");
+}

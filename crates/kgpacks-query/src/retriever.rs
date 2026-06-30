@@ -133,6 +133,13 @@ impl<'conn, 'db, E: Embedder> PackRetriever<'conn, 'db, E> {
                 "k must be a positive integer, got {k}"
             )));
         }
+        if i64::try_from(k).is_err() {
+            // The driver binds the result count as an INT64; reject a `k` that
+            // would not fit rather than silently truncating it.
+            return Err(QueryError::InvalidArgument(format!(
+                "k is too large to bind as an INT64 limit, got {k}"
+            )));
+        }
 
         let hybrid = opts.mode == RetrieveMode::Hybrid;
         self.ensure_extensions(hybrid)?;
