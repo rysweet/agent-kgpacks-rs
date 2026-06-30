@@ -11,3 +11,8 @@ description = "Hybrid vector/FTS retrieval, reranking and cypher-RAG for agent-k
 kgpacks-db = { workspace = true }
 kgpacks-embeddings = { workspace = true }
 kgpacks-agent = { workspace = true }
+thiserror.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
