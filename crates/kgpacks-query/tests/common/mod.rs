@@ -10,11 +10,45 @@
 //! every helper, so dead-code warnings are suppressed crate-locally here.
 #![allow(dead_code)]
 
-use kgpacks_db::{Connection, LogicalType, Value};
+use kgpacks_db::{Connection, Database, LogicalType, Value};
 use kgpacks_query::{Embedder, Result};
 
 /// Production embedding width (matches `kgpacks_embeddings::DEFAULT_DIM`).
 pub const DIM: usize = 768;
+
+/// Install the `vector` and `fts` LadybugDB extensions exactly once per test
+/// process, serialized so the COLD install does not race.
+///
+/// `cargo test` runs the tests inside a binary on parallel threads. The first
+/// `LOAD`/`INSTALL` of an extension downloads it and creates
+/// `~/.lbdb/extension/<ver>/<platform>/`; several threads doing that cold install
+/// simultaneously race on the directory creation ("Directory … cannot be
+/// created"). [`std::sync::Once`] blocks every caller until the first install
+/// completes, after which the directory exists and all subsequent per-connection
+/// `load_extension` calls (in test setup AND inside `PackRetriever`) are no-op
+/// installs + plain loads with no shared-directory contention. Each test calls
+/// this before touching an extension.
+pub fn ensure_extensions_installed() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        let db = Database::in_memory().expect("init db for extension install");
+        let conn = db.connect().expect("init conn for extension install");
+        conn.load_extension("vector")
+            .expect("install vector extension");
+        conn.load_extension("fts").expect("install fts extension");
+    });
+}
+
+/// Install (once, serialized) the `vector` extension and load it on `conn`.
+///
+/// Wraps [`ensure_extensions_installed`] + a per-connection `load_extension` so
+/// every test setup gets the cold-install serialization for free. The first call
+/// across the process does the real install; later calls just load into their
+/// own connection's database instance.
+pub fn load_vector_ext(conn: &Connection<'_>) {
+    ensure_extensions_installed();
+    conn.load_extension("vector").expect("load vector ext");
+}
 
 /// A `DIM`-length one-hot unit vector with `1.0` at `index`.
 pub fn one_hot(index: usize) -> Vec<f32> {

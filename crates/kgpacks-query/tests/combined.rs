@@ -32,7 +32,7 @@ fn rank(results: &[RetrieverResult], id: &str) -> usize {
 ///   id 3 "Giraffe Plains"  e4 (orthogonal)          → keyword 0.14 (FTS-only)
 ///   id 4 "Hidden Neighbor" e5 (orthogonal)          → graph 0.15 (graph-only)
 fn setup_int(conn: &Connection<'_>) {
-    conn.load_extension("vector").expect("load vector ext");
+    common::load_vector_ext(conn);
     common::create_int_schema(conn);
     common::insert_int_section(conn, 1, "Solo Anchor", "anchor", &one_hot(0));
     common::insert_int_section(conn, 2, "Elephant Park", "park", &mix(0, 1, 0.6, 0.8));
@@ -105,7 +105,7 @@ fn isolates_and_sums_vector_graph_and_keyword_signals() {
 /// `kgpacks-packs`' `Section(id STRING, title, content, …)` plus the embedding
 /// column M4 adds for retrieval.
 fn setup_string(conn: &Connection<'_>) {
-    conn.load_extension("vector").expect("load vector ext");
+    common::load_vector_ext(conn);
     conn.run(
         "CREATE NODE TABLE Section(id STRING, title STRING, content STRING, \
          embedding FLOAT[768], PRIMARY KEY(id))",
@@ -201,7 +201,7 @@ fn retrieves_over_a_string_keyed_pack_schema() {
 /// names into all three issued queries (`QUERY_VECTOR_INDEX`, the `LINKS_TO`
 /// traversal, and the title-keyword match) rather than the defaults.
 fn setup_custom(conn: &Connection<'_>) {
-    conn.load_extension("vector").expect("load vector ext");
+    common::load_vector_ext(conn);
     conn.run(
         "CREATE NODE TABLE Doc(id INT64, title STRING, content STRING, \
          embedding FLOAT[768], PRIMARY KEY(id))",
@@ -284,7 +284,7 @@ fn uses_a_custom_node_table_and_vector_index() {
 /// pins the seed cap at EXACTLY three: the test would fail if the cap were 2
 /// (node 5 unboosted) or 4 (node 7 boosted).
 fn setup_seed_cap(conn: &Connection<'_>) {
-    conn.load_extension("vector").expect("load vector ext");
+    common::load_vector_ext(conn);
     common::create_int_schema(conn);
     // sqrt(1 - cos^2) chosen so each mix vector is unit-norm with the stated cosine.
     common::insert_int_section(conn, 1, "N1", "c", &one_hot(0)); // cos 1.0

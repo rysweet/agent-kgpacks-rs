@@ -19,7 +19,7 @@ use kgpacks_query::{PackRetriever, RetrieveOptions, RetrieverConfig};
 ///   id 2 — cosine 0.6  (`0.6·e0 + 0.8·e1`)       → score 0.6
 ///   id 3 — cosine 0.0  (orthogonal `e2`)         → score 0.0
 fn setup(conn: &Connection<'_>) {
-    conn.load_extension("vector").expect("load vector ext");
+    common::load_vector_ext(conn);
     common::create_int_schema(conn);
     insert_int_section(
         conn,

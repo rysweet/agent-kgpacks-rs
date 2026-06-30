@@ -24,7 +24,7 @@ use kgpacks_db::{Connection, Database};
 use kgpacks_query::{HybridWeights, PackRetriever, RetrieveMode, RetrieveOptions, RetrieverConfig};
 
 fn setup(conn: &Connection<'_>) {
-    conn.load_extension("vector").expect("load vector ext");
+    common::load_vector_ext(conn);
     common::create_int_schema(conn);
     insert_int_section(conn, 1, "Alpha Physics", "Alpha content", &one_hot(0));
     insert_int_section(conn, 2, "Beta Chemistry", "Beta content", &one_hot(1));
@@ -143,7 +143,7 @@ fn still_answers_vector_mode_against_the_same_fixture() {
 /// orthogonal to the query vector (`one_hot(100)`) so every vector score is 0 —
 /// isolating the keyword signal so only the kept keywords can contribute.
 fn setup_keywords(conn: &Connection<'_>) {
-    conn.load_extension("vector").expect("load vector ext");
+    common::load_vector_ext(conn);
     common::create_int_schema(conn);
     insert_int_section(conn, 1, "Photosynthesis", "c", &one_hot(0));
     insert_int_section(conn, 2, "Plants", "c", &one_hot(1));
