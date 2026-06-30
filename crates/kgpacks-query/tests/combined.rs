@@ -277,10 +277,12 @@ fn uses_a_custom_node_table_and_vector_index() {
 // ── Graph-seed cap: only the first MAX_GRAPH_SEEDS (3) scored nodes seed ──────
 
 /// Five vector hits with strictly decreasing cosine (1.0, 0.9, 0.8, 0.7 to
-/// `one_hot(0)`), so insertion order is deterministic, plus two orthogonal nodes
-/// reached only via `LINKS_TO`. Edge `1 -> 6` (seed) and `4 -> 7` (NOT a seed):
-/// node 6 must receive a graph boost; node 7 must not, because node 4 is the
-/// fourth scored node and the reference caps graph seeds at the first three.
+/// `one_hot(0)`), so insertion order is deterministic, plus orthogonal nodes
+/// reached only via `LINKS_TO`. Edges `1 -> 6` (1st seed), `3 -> 5` (3rd seed),
+/// and `4 -> 7` (4th node, NOT a seed). Nodes 6 and 5 must receive a graph boost
+/// (their sources are among the first three seeds) while node 7 must not — which
+/// pins the seed cap at EXACTLY three: the test would fail if the cap were 2
+/// (node 5 unboosted) or 4 (node 7 boosted).
 fn setup_seed_cap(conn: &Connection<'_>) {
     conn.load_extension("vector").expect("load vector ext");
     common::create_int_schema(conn);
@@ -289,10 +291,11 @@ fn setup_seed_cap(conn: &Connection<'_>) {
     common::insert_int_section(conn, 2, "N2", "c", &mix(0, 1, 0.9, 0.435_889_9)); // cos 0.9
     common::insert_int_section(conn, 3, "N3", "c", &mix(0, 2, 0.8, 0.6)); // cos 0.8
     common::insert_int_section(conn, 4, "N4", "c", &mix(0, 3, 0.7, 0.714_142_8)); // cos 0.7
-    common::insert_int_section(conn, 5, "N5", "c", &one_hot(8)); // cos 0
+    common::insert_int_section(conn, 5, "N5", "c", &one_hot(8)); // neighbor of seed 3
     common::insert_int_section(conn, 6, "N6", "c", &one_hot(9)); // neighbor of seed 1
     common::insert_int_section(conn, 7, "N7", "c", &one_hot(10)); // neighbor of non-seed 4
     common::link_int(conn, 1, 6);
+    common::link_int(conn, 3, 5);
     common::link_int(conn, 4, 7);
     common::create_vector_index(conn);
 }
@@ -327,8 +330,15 @@ fn graph_seeds_are_capped_at_the_first_three_scored_nodes() {
         "n6 = {}",
         score_of(&results, "6")
     );
+    // Node 5 (neighbor of seed node 3, the THIRD scored node) also gets boosted —
+    // proving the 3rd node IS a seed (the cap is not 2).
+    assert!(
+        (score_of(&results, "5") - 0.15).abs() < 1e-4,
+        "n5 = {}",
+        score_of(&results, "5")
+    );
     // Node 7 (neighbor of node 4, the FOURTH scored node) gets nothing — node 4
-    // is past the 3-seed cap, so its edges are never traversed.
+    // is past the 3-seed cap, so its edges are never traversed (the cap is not 4).
     assert!(
         score_of(&results, "7").abs() < 1e-4,
         "n7 = {}",
