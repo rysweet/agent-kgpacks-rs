@@ -30,9 +30,12 @@ scopes:
 | `workflow` | Read CI status; touch `.github/workflows/` if a finding targets CI. |
 
 ```bash
-gh auth status          # verify auth
-gh auth token           # never echoed into logs or commits
+gh auth status          # verify auth (does NOT print the token)
 ```
+
+Never run `gh auth token` in this workflow — it prints the raw credential to
+stdout, risking capture in logs or transcripts. `gh auth status` is sufficient to
+confirm authentication.
 
 Transient auth/rate-limit failures are retried once, then surfaced visibly (never
 swallowed).

@@ -138,11 +138,11 @@ The audit is **done** when every wave comment on the umbrella issue reads
 
 ```bash
 # List all audit PRs and their state (deterministic: query the label, not the title):
-gh pr list --label quality-audit --state all
+gh pr list --label quality-audit --state all --limit 1000
 
 # Restrict to the ten waves only (excludes the audit(bootstrap) PR):
-gh pr list --label quality-audit --search "audit(wave" --state all
+gh pr list --label quality-audit --search "audit(wave" --state all --limit 1000
 
 # Open the umbrella issue:
-gh issue list --label quality-audit --search "Ten-Wave Quality Audit in:title"
+gh issue list --label quality-audit --search "Ten-Wave Quality Audit in:title" --limit 1000
 ```

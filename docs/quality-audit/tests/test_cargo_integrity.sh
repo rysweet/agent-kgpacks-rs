@@ -30,9 +30,14 @@ for crate in kgpacks-agent kgpacks-backend kgpacks-cli kgpacks-db \
 done
 
 # Pinned upstream engine must be locked at the manifest's pinned version.
+# Helper takes positional args (lockfile, version) so nothing is interpolated
+# into a `bash -c` string — no injection surface, no quoting hazards.
+lock_locks_pkg_version() {
+  # $1=lockfile  $2=package name  $3=version
+  grep -A2 -- "^name = \"$2\"\$" "$1" | grep -Fq -- "version = \"$3\""
+}
 assert "root manifest pins lbug =0.15.3" file_has_str "$ROOT_MANIFEST" 'lbug = "=0.15.3"'
-assert "Cargo.lock locks lbug 0.15.3" \
-  bash -c 'grep -A2 "^name = \"lbug\"$" "'"$LOCK"'" | grep -Fq "version = \"0.15.3\""'
+assert "Cargo.lock locks lbug 0.15.3" lock_locks_pkg_version "$LOCK" "lbug" "0.15.3"
 
 # CI must enforce all four gates under --locked, plus the copilot-feature step.
 assert "CI runs fmt check" file_has_str "$CI" 'cargo fmt --all -- --check'

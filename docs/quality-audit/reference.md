@@ -251,7 +251,7 @@ umbrella issue and **every** audit PR has reached a terminal state. Verify
 deterministically via the `quality-audit` label rather than a title search:
 
 ```bash
-gh pr list --label quality-audit --state all   # every PR merged or closed
+gh pr list --label quality-audit --state all --limit 1000   # every PR merged or closed
 ```
 
 together with ten `Status: COMPLETE` wave comments on the umbrella issue.

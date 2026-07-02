@@ -256,7 +256,7 @@ After wave 10, verify the audit is done.
 gh issue view <umbrella-issue> --comments | grep -c "Status: COMPLETE"   # expect 10
 
 # Every audit PR terminal (merged or closed)? Query the label, not the title.
-gh pr list --label quality-audit --state all
+gh pr list --label quality-audit --state all --limit 1000
 
 # Worktree clean; remove the out-of-tree TS clone.
 git status --porcelain          # expect empty

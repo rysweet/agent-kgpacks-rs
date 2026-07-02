@@ -42,7 +42,7 @@ REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo 
 printf '# repo under test: %s\n' "$REPO"
 
 # --- Umbrella issue exists and is labeled ---
-UNUM="$(gh issue list --repo "$REPO" --label quality-audit --state all \
+UNUM="$(gh issue list --repo "$REPO" --label quality-audit --state all --limit 1000 \
   --search 'Ten-Wave Quality Audit in:title' --json number -q '.[0].number' 2>/dev/null || true)"
 if [ -n "$UNUM" ]; then
   ok "umbrella issue exists and is labeled quality-audit (#$UNUM)"
@@ -64,7 +64,7 @@ else
 fi
 
 # --- No audit PR left open ---
-OPEN="$(gh pr list --repo "$REPO" --label quality-audit --state open \
+OPEN="$(gh pr list --repo "$REPO" --label quality-audit --state open --limit 1000 \
   --json number -q 'length' 2>/dev/null || echo ERR)"
 if [ "$OPEN" = "0" ]; then
   ok "no quality-audit PRs remain open"
@@ -73,7 +73,7 @@ else
 fi
 
 # --- Every audit PR reached a terminal state (MERGED or CLOSED) ---
-NONTERMINAL="$(gh pr list --repo "$REPO" --label quality-audit --state all \
+NONTERMINAL="$(gh pr list --repo "$REPO" --label quality-audit --state all --limit 1000 \
   --json number,state -q '[.[] | select(.state != "MERGED" and .state != "CLOSED")] | length' \
   2>/dev/null || echo ERR)"
 if [ "$NONTERMINAL" = "0" ]; then
@@ -84,7 +84,7 @@ else
 fi
 
 # --- Bootstrap ("wave 0") hygiene PR exists and is merged ---
-BOOT_MERGED="$(gh pr list --repo "$REPO" --label quality-audit --state all \
+BOOT_MERGED="$(gh pr list --repo "$REPO" --label quality-audit --state all --limit 1000 \
   --search 'audit(bootstrap) in:title' --json state,title \
   -q '[.[] | select(.state == "MERGED")] | length' 2>/dev/null || echo 0)"
 if [ "${BOOT_MERGED:-0}" -ge 1 ]; then
