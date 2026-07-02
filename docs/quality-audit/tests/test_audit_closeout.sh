@@ -84,9 +84,14 @@ else
 fi
 
 # --- Bootstrap ("wave 0") hygiene PR exists and is merged ---
+# Detect by title PREFIX via jq, not GitHub's `--search`: the literal
+# `audit(bootstrap)` is tokenized by search (the parentheses) and, combined with
+# `--label`, matches nothing even when the PR exists. The label-scoped list +
+# `startswith` is deterministic.
 BOOT_MERGED="$(gh pr list --repo "$REPO" --label quality-audit --state all --limit 1000 \
-  --search 'audit(bootstrap) in:title' --json state,title \
-  -q '[.[] | select(.state == "MERGED")] | length' 2>/dev/null || echo 0)"
+  --json state,title \
+  -q '[.[] | select(.title | startswith("audit(bootstrap)")) | select(.state == "MERGED")] | length' \
+  2>/dev/null || echo 0)"
 if [ "${BOOT_MERGED:-0}" -ge 1 ]; then
   ok "bootstrap (wave 0) hygiene PR is merged"
 else
