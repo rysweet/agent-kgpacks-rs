@@ -98,13 +98,14 @@ done
 assert "usage creates the label"  file_has_str "$USAGE" "gh label create quality-audit"
 assert "examples creates the label" file_has_str "$EX" "gh label create quality-audit"
 assert "configuration documents the label" file_has_str "$CFG" "gh label create quality-audit"
-# Closeout discovery is by label, not by brittle title match.
-assert "usage closeout queries by label" \
-  file_has_str "$USAGE" "gh pr list --label quality-audit --state all"
-assert "reference closeout queries by label" \
-  file_has_str "$REF" "gh pr list --label quality-audit --state all"
-assert "examples closeout queries by label" \
-  file_has_str "$EX" "gh pr list --label quality-audit --state all"
+# Closeout discovery is by label, not by brittle title match, and must be
+# bounded so audits with >30 PRs are not silently truncated (--limit).
+assert "usage closeout queries by label with --limit" \
+  file_has_str "$USAGE" "gh pr list --label quality-audit --state all --limit 1000"
+assert "reference closeout queries by label with --limit" \
+  file_has_str "$REF" "gh pr list --label quality-audit --state all --limit 1000"
+assert "examples closeout queries by label with --limit" \
+  file_has_str "$EX" "gh pr list --label quality-audit --state all --limit 1000"
 
 # ---- R2: bootstrap ("wave 0") disambiguation ----
 for f in "${ALL[@]}"; do

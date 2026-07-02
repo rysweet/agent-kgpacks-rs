@@ -33,9 +33,9 @@ scopes:
 gh auth status          # verify auth (does NOT print the token)
 ```
 
-Never run `gh auth token` in this workflow — it prints the raw credential to
-stdout, risking capture in logs or transcripts. `gh auth status` is sufficient to
-confirm authentication.
+Never print raw credentials to stdout in this workflow (no token-printing
+commands): the value can be captured in logs, CI output, or transcripts.
+`gh auth status` confirms authentication without exposing the secret.
 
 Transient auth/rate-limit failures are retried once, then surfaced visibly (never
 swallowed).
