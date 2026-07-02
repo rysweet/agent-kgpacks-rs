@@ -375,6 +375,16 @@ step) so the default gates stay lean and hermetic; the retrieval ENHANCEMENTS
 layer, the MCP/backend HTTP surfaces, and the `parity/` harness remain
 follow-ups beyond this core flow.
 
+## Quality audit
+
+The repository is maintained under a **Ten-Wave Quality Audit** — a repeatable,
+agent-driven process that runs ten `SEEK → VALIDATE → FIX` waves across
+correctness, memory safety, error handling, idiomatic Rust, test
+coverage/quality, and M1–M5 parity with the TypeScript reference. Every fix PR is
+gated behind CI **and** an explicit proxy review from the `crusty-old-engineer`
+reviewer. See [`docs/quality-audit/`](docs/quality-audit/README.md) for the
+usage, reference, configuration, and worked examples.
+
 ## License
 
 [MIT](LICENSE).
