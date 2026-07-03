@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # File: docs/quality-audit/tests/lib.sh
 # Tiny, dependency-free assertion harness for the Ten-Wave Quality Audit
 # contract tests. Sourced by every test_*.sh. Uses only POSIX tools + git/gh.
