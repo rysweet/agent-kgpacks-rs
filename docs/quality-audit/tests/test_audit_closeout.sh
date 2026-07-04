@@ -53,14 +53,28 @@ else
   exit $?
 fi
 
-# --- Exactly ten Status: COMPLETE wave comments ---
-COMPLETE="$(gh issue view "$UNUM" --repo "$REPO" --json comments \
-  -q '.comments[].body' 2>/dev/null | grep -c 'Status: COMPLETE' || true)"
-COMPLETE="${COMPLETE:-0}"
-if [ "$COMPLETE" -eq 10 ]; then
-  ok "exactly ten waves logged Status: COMPLETE (found $COMPLETE)"
+# --- Exactly ten DISTINCT waves (1-10) logged Status: COMPLETE ---
+# A raw `grep -c 'Status: COMPLETE'` counts lines, so it is fragile two ways:
+# a single comment repeating the marker over-counts (false red), and one wave
+# logged twice while another is missing still sums to ten (false green). Instead,
+# extract each COMPLETE comment's `## Wave N` header and require the distinct set
+# to be exactly {1..10}. jq's `capture` yields one wave id per completed comment;
+# POSIX bracket classes avoid backslash-escaping hazards through the shell.
+WAVE_IDS="$(gh issue view "$UNUM" --repo "$REPO" --json comments \
+  -q '.comments[]
+      | select(.body | test("(?m)^##[[:space:]]*Wave[[:space:]]*[0-9]+"))
+      | select(.body | test("(?m)^Status:[[:space:]]*COMPLETE"))
+      | (.body | capture("(?m)^##[[:space:]]*Wave[[:space:]]*(?<n>[0-9]+)").n)' \
+  2>/dev/null | sort -n | uniq)"
+DISTINCT="$(printf '%s\n' "$WAVE_IDS" | grep -c '^[0-9][0-9]*$' || true)"
+DISTINCT="${DISTINCT:-0}"
+WAVE_LIST="$(printf '%s' "$WAVE_IDS" | tr '\n' ' ')"
+OUT_OF_RANGE="$(printf '%s\n' "$WAVE_IDS" | awk 'NF && ($1+0 < 1 || $1+0 > 10)' | tr '\n' ' ')"
+if [ "$DISTINCT" -eq 10 ] && [ -z "$OUT_OF_RANGE" ]; then
+  ok "exactly ten distinct waves (1-10) logged Status: COMPLETE"
 else
-  nok "exactly ten waves logged Status: COMPLETE" "found $COMPLETE of 10"
+  nok "exactly ten distinct waves (1-10) logged Status: COMPLETE" \
+    "distinct=$DISTINCT [$WAVE_LIST]; out-of-range: ${OUT_OF_RANGE:-none}"
 fi
 
 # --- No audit PR left open ---

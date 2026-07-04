@@ -11,3 +11,9 @@ rustc-ice-*.txt
 # Agent session / runtime artifacts — never commit these onto audit branches.
 .claude/runtime/
 .claude/**/runtime/
+
+# Secrets — never commit credentials or key material.
+.env
+.env.*
+*.pem
+*.key
