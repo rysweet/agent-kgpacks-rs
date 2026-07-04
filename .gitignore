@@ -17,3 +17,9 @@ rustc-ice-*.txt
 .env.*
 *.pem
 *.key
+
+# gadugi-agentic-test runtime artifacts (qa/ parity harness runs)
+/logs/
+/outputs/
+/reports/
+/screenshots/

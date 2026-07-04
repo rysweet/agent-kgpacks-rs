@@ -88,7 +88,8 @@ workspace. As of M2, `kgpacks-db` consumes `lbug`; the others remain stubs.
   manifest schema + SemVer versioning and builds/loads a pack over the graph
   store. Vector/FTS indexing is deferred to M4.
 - **M3 — Ingestion + embeddings (landed).** `kgpacks-embeddings` ports the
-  sentence-aware chunker and an embedding generator (a deterministic,
+  fixed-window chunker (chunk size/overlap, id format, and windowing at parity
+  with `agent-kgpacks-ts`) and an embedding generator (a deterministic,
   retrieval-contract-preserving model standing in for the BGE transformer so CI
   stays hermetic), and `kgpacks-ingestion` ports the working-store schema,
   pluggable content sources, LLM-extraction sanitization (gated behind a
@@ -230,7 +231,7 @@ a Rust module proven by a mirroring parity test:
 
 | Reference (`agent-kgpacks`)              | Rust module                              | Parity test                          |
 | ---------------------------------------- | ---------------------------------------- | ------------------------------------ |
-| `embeddings/chunker.py`                  | `kgpacks-embeddings::chunker`            | `kgpacks-embeddings/tests/chunker.rs` |
+| `ingestion/src/chunking.ts` (TS parity)  | `kgpacks-embeddings::chunker`            | `kgpacks-embeddings/tests/chunker.rs` |
 | `embeddings/generator.py`                | `kgpacks-embeddings` (`Embedder`)        | `kgpacks-embeddings/tests/generator.rs` |
 | `extraction/llm_extractor.py`            | `kgpacks-ingestion::extraction`          | `kgpacks-ingestion/tests/extraction.rs` |
 | `expansion/link_discovery.py`            | `kgpacks-ingestion::link_discovery`      | `kgpacks-ingestion/tests/link_discovery.rs` |
