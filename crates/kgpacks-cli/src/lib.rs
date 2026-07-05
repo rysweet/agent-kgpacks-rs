@@ -81,6 +81,7 @@ fn dispatch(
         "demo" => Ok(demo()),
         "query" => cmd_query(&packs_dir, &rest[1..]),
         "status" => cmd_status(&packs_dir),
+        "pack" => cmd_pack(&packs_dir, &rest[1..]),
         "ask" => cmd_ask(&packs_dir, &rest[1..], make_transport),
         other => Err(format!("unknown command: {other}")),
     }
@@ -92,6 +93,9 @@ fn help_text() -> String {
         "  query <pack> <question> [-k <n>] [--mode vector|hybrid]   ranked retrieval as JSON",
         "  ask   <pack> <question> [-k <n>] [--mode vector|hybrid] [--multidoc]   graph-RAG answer as JSON",
         "  status                                                    installed packs summary as JSON",
+        "  pack list                                                 installed packs (name, version, description) as JSON",
+        "  pack info <pack>                                          a pack's full manifest as JSON",
+        "  pack validate <pack>                                      validate a pack's manifest as JSON",
         "  demo                                                      smoke-test the pipeline",
         "  version                                                   print the version",
     ]
@@ -268,6 +272,101 @@ fn cmd_status(packs_dir: &Path) -> Result<String, String> {
     serde_json::to_string_pretty(&json).map_err(|e| e.to_string())
 }
 
+/// `pack <subcommand>` — read-path registry management.
+///
+/// Ports the READ-PATH subset of `cli/src/commands/pack.ts`: the deterministic,
+/// offline subcommands that only *read* the installed-pack registry —
+/// `list`, `info`, and `validate`. The write/network subcommands (`install`,
+/// `pull`, `remove`) and the ingestion/eval verbs (`create`, `update`, `eval`)
+/// remain follow-ups (issue #13), consistent with the Rust port being the
+/// read-path subset of the TypeScript CLI.
+fn cmd_pack(packs_dir: &Path, args: &[String]) -> Result<String, String> {
+    match args.first().map(String::as_str) {
+        Some("list") => cmd_pack_list(packs_dir),
+        Some("info") => cmd_pack_info(packs_dir, args.get(1)),
+        Some("validate") => cmd_pack_validate(packs_dir, args.get(1)),
+        Some(other) => Err(format!(
+            "unknown pack subcommand: {other} (expected: list, info, validate)"
+        )),
+        None => Err("missing pack subcommand (expected: list, info, validate)".to_string()),
+    }
+}
+
+/// `pack list` — the installed packs as `[{ name, version, description }]`.
+///
+/// Ports `pack list` from `cli/src/commands/pack.ts`: lists every pack under the
+/// resolved packs directory (a missing directory yields an empty list, never an
+/// error), projects each to `{ name, version, description }` (description
+/// defaulting to `""` when absent, mirroring the reference's
+/// `typeof … === 'string' ? … : ''`), and sorts by name via
+/// [`localecompare_pack_name`] (the same ICU-root order as `status`). Output is
+/// pretty JSON.
+fn cmd_pack_list(packs_dir: &Path) -> Result<String, String> {
+    let mut packs = kgpacks_packs::list_packs(packs_dir);
+    packs.sort_by(|a, b| localecompare_pack_name(&a.name, &b.name));
+
+    let json = serde_json::Value::Array(
+        packs
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "name": p.name,
+                    "version": p.version,
+                    "description": p.manifest.description.clone().unwrap_or_default(),
+                })
+            })
+            .collect(),
+    );
+    serde_json::to_string_pretty(&json).map_err(|e| e.to_string())
+}
+
+/// `pack info <pack>` — a pack's full manifest as pretty JSON.
+///
+/// Ports `pack info` from `cli/src/commands/pack.ts` (over `packs/registry.ts`
+/// `packInfo`): validates the pack name against `PACK_NAME_RE`, requires the
+/// pack's `manifest.json` to exist (else `pack not found`), then loads +
+/// validates the manifest and prints it in the canonical snake_case on-disk
+/// shape (`PackManifest::to_value`), at parity with the reference's
+/// `printJson(info.manifest)`.
+fn cmd_pack_info(packs_dir: &Path, name: Option<&String>) -> Result<String, String> {
+    let name = name.ok_or_else(|| "missing <pack> argument".to_string())?;
+    if !kgpacks_packs::pack_name_re().is_match(name) {
+        return Err(format!("invalid pack name: {name}"));
+    }
+    let dir = packs_dir.join(name);
+    if !kgpacks_packs::manifest_path_in(&dir).exists() {
+        return Err(format!("pack not found: {name}"));
+    }
+    let manifest = kgpacks_packs::load_manifest_from_dir(&dir).map_err(|e| e.to_string())?;
+    serde_json::to_string_pretty(&manifest.to_value()).map_err(|e| e.to_string())
+}
+
+/// `pack validate <pack>` — confirm a pack's manifest is valid.
+///
+/// Ports `pack validate` from `cli/src/commands/pack.ts`: resolves an existing
+/// pack directory (a name that fails `PACK_NAME_RE`, or a missing directory /
+/// `manifest.json`, is reported as `pack not found`), loads + validates the
+/// manifest (a schema violation surfaces as an error), and prints
+/// `{ valid: true, name, version }` on success.
+fn cmd_pack_validate(packs_dir: &Path, name: Option<&String>) -> Result<String, String> {
+    let name = name.ok_or_else(|| "missing <pack> argument".to_string())?;
+    if !kgpacks_packs::pack_name_re().is_match(name) {
+        return Err(format!("pack not found: {name}"));
+    }
+    let dir = packs_dir.join(name);
+    if !dir.is_dir() || !kgpacks_packs::manifest_path_in(&dir).exists() {
+        return Err(format!("pack not found: {name}"));
+    }
+    let manifest = kgpacks_packs::load_manifest_from_dir(&dir).map_err(|e| e.to_string())?;
+
+    let json = serde_json::json!({
+        "valid": true,
+        "name": manifest.name,
+        "version": manifest.version,
+    });
+    serde_json::to_string_pretty(&json).map_err(|e| e.to_string())
+}
+
 /// Compare two pack names the way the reference CLI's `name.localeCompare(...)`
 /// does, restricted to the ASCII pack-name character set (`PACK_NAME_RE`:
 /// `[a-zA-Z0-9_-]`).
@@ -407,6 +506,9 @@ mod tests {
         assert!(out.contains("query"));
         assert!(out.contains("ask"));
         assert!(out.contains("status"));
+        assert!(out.contains("pack list"));
+        assert!(out.contains("pack info"));
+        assert!(out.contains("pack validate"));
     }
 
     #[test]
@@ -461,6 +563,155 @@ mod tests {
         assert_eq!(packs[1]["name"], "zeta");
         assert_eq!(packs[1]["version"], "2.0.0");
         assert_eq!(packs[1]["dbPresent"], true);
+    }
+
+    #[test]
+    fn pack_list_projects_name_version_description_sorted() {
+        use std::fs;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        let a = root.join("alpha");
+        fs::create_dir_all(&a).unwrap();
+        fs::write(
+            a.join("manifest.json"),
+            r#"{"name":"alpha","version":"1.0.0","description":"the alpha pack"}"#,
+        )
+        .unwrap();
+
+        let z = root.join("zeta");
+        fs::create_dir_all(&z).unwrap();
+        // No description -> defaults to "".
+        fs::write(
+            z.join("manifest.json"),
+            r#"{"name":"zeta","version":"2.0.0"}"#,
+        )
+        .unwrap();
+
+        // Invalid manifest (missing version) -> skipped, never fatal.
+        let b = root.join("broken");
+        fs::create_dir_all(&b).unwrap();
+        fs::write(b.join("manifest.json"), r#"{"name":"broken"}"#).unwrap();
+
+        let out = cmd_pack_list(root).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let packs = value.as_array().unwrap();
+        assert_eq!(packs.len(), 2);
+        assert_eq!(packs[0]["name"], "alpha");
+        assert_eq!(packs[0]["version"], "1.0.0");
+        assert_eq!(packs[0]["description"], "the alpha pack");
+        assert_eq!(packs[1]["name"], "zeta");
+        // Absent description is the empty string, not null / missing.
+        assert_eq!(packs[1]["description"], "");
+    }
+
+    #[test]
+    fn pack_list_on_a_missing_packs_dir_is_empty() {
+        let out = cmd_pack_list(Path::new("/no/such/packs/dir")).unwrap();
+        assert_eq!(out, "[]");
+    }
+
+    #[test]
+    fn pack_info_prints_the_full_manifest_verbatim() {
+        use std::fs;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let dir = root.join("rich");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("manifest.json"),
+            r#"{"name":"rich","version":"1.2.3","description":"rich","graph_stats":{"articles":7,"size_mb":1.5},"unknown":"kept"}"#,
+        )
+        .unwrap();
+
+        let name = "rich".to_string();
+        let out = cmd_pack_info(root, Some(&name)).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(value["name"], "rich");
+        assert_eq!(value["version"], "1.2.3");
+        assert_eq!(value["graph_stats"]["articles"], 7);
+        assert_eq!(value["graph_stats"]["size_mb"], 1.5);
+        // Unknown keys survive the round-trip.
+        assert_eq!(value["unknown"], "kept");
+    }
+
+    #[test]
+    fn pack_info_missing_argument_and_missing_pack_error() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            cmd_pack_info(tmp.path(), None).unwrap_err(),
+            "missing <pack> argument"
+        );
+        let name = "ghost".to_string();
+        assert_eq!(
+            cmd_pack_info(tmp.path(), Some(&name)).unwrap_err(),
+            "pack not found: ghost"
+        );
+    }
+
+    #[test]
+    fn pack_info_rejects_an_invalid_name_before_touching_the_filesystem() {
+        let name = "../escape".to_string();
+        assert_eq!(
+            cmd_pack_info(Path::new("/no/such/root"), Some(&name)).unwrap_err(),
+            "invalid pack name: ../escape"
+        );
+    }
+
+    #[test]
+    fn pack_validate_accepts_valid_and_rejects_invalid() {
+        use std::fs;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        let good = root.join("good");
+        fs::create_dir_all(&good).unwrap();
+        fs::write(
+            good.join("manifest.json"),
+            r#"{"name":"good","version":"3.1.4"}"#,
+        )
+        .unwrap();
+
+        let name = "good".to_string();
+        let out = cmd_pack_validate(root, Some(&name)).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(value["valid"], true);
+        assert_eq!(value["name"], "good");
+        assert_eq!(value["version"], "3.1.4");
+
+        // Missing required `version` -> validation error surfaces.
+        let bad = root.join("bad");
+        fs::create_dir_all(&bad).unwrap();
+        fs::write(bad.join("manifest.json"), r#"{"name":"bad"}"#).unwrap();
+        let bad_name = "bad".to_string();
+        assert!(cmd_pack_validate(root, Some(&bad_name)).is_err());
+    }
+
+    #[test]
+    fn pack_validate_reports_a_traversal_name_as_not_found() {
+        // Both an invalid name and a missing directory are reported identically
+        // ("pack not found"), matching the reference's resolveExistingPackDir.
+        let traversal = "../secrets".to_string();
+        assert_eq!(
+            cmd_pack_validate(Path::new("/no/such/root"), Some(&traversal)).unwrap_err(),
+            "pack not found: ../secrets"
+        );
+        let missing = "ghost".to_string();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            cmd_pack_validate(tmp.path(), Some(&missing)).unwrap_err(),
+            "pack not found: ghost"
+        );
+    }
+
+    #[test]
+    fn pack_dispatch_rejects_bare_and_unknown_subcommands() {
+        assert!(cmd_pack(Path::new("/tmp"), &[])
+            .unwrap_err()
+            .contains("missing pack subcommand"));
+        assert!(cmd_pack(Path::new("/tmp"), &["install".to_string()])
+            .unwrap_err()
+            .contains("unknown pack subcommand: install"));
     }
 
     #[test]
