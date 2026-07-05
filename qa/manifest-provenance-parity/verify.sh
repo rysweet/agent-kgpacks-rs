@@ -16,7 +16,8 @@
 #      (full, null-valued declared fields, `provenance: null`, and no provenance)
 #      against packs with EACH documented malformed-provenance shape.
 #   2. Run the Rust `kgpacks status` over it.
-#   3. Run the live TypeScript reference oracle (the shared, provenance-aware
+#   3. Run the shared JS reference oracle — a live-run, dependency-free port of
+#      the agent-kgpacks-ts `validateManifest` semantics (the provenance-aware
 #      qa/status-parity/reference_oracle.mjs) over the SAME dir.
 #   4. Canonicalize (recursively sort keys) and assert byte-for-byte equality:
 #      both implementations must agree on exactly which packs are valid.
@@ -90,9 +91,9 @@ node "$ORACLE" status "$FIX" > "$TS_JSON"
 RS_CANON="$(node "$ORACLE" canon "$RS_JSON")"
 TS_CANON="$(node "$ORACLE" canon "$TS_JSON")"
 
-# --- 4: Rust must equal the live TypeScript reference (canonicalized). --------
+# --- 4: Rust must equal the JS reference oracle output (canonicalized). --------
 if [ "$RS_CANON" != "$TS_CANON" ]; then
-  echo "PROVENANCE_PARITY_FAILED: Rust manifest-provenance gate diverged from the live agent-kgpacks-ts reference"
+  echo "PROVENANCE_PARITY_FAILED: Rust manifest-provenance gate diverged from the agent-kgpacks-ts reference oracle"
   echo "--- Rust (canonical) ---"
   echo "$RS_CANON"
   echo "--- agent-kgpacks-ts (canonical) ---"
@@ -121,5 +122,5 @@ for bad in bad-prov-notobj bad-section bad-field bad-dims bad-dims-str; do
   fi
 done
 
-echo "checked Rust manifest-provenance gate == live agent-kgpacks-ts reference == expected outcome"
+echo "checked Rust manifest-provenance gate == agent-kgpacks-ts reference oracle == expected outcome"
 echo "PROVENANCE_PARITY_OK"

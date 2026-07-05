@@ -200,7 +200,9 @@ number) and deep-sanitizes it against prototype-pollution keys, mirroring
 `packages/packs/src/manifest.ts`. A manifest carrying a malformed `provenance`
 block is therefore rejected (and such a pack is skipped by `registry::list_packs`
 / the `status` command) exactly as the reference rejects it. Cross-checked by
-`qa/manifest-provenance-parity` against the live TypeScript oracle.
+`qa/manifest-provenance-parity`, which diffs the Rust `status` listing against a
+live-run JS reference oracle that mirrors the TypeScript `validateManifest`
+semantics over the same fixtures.
 
 ## Ingestion pipeline (M3)
 
