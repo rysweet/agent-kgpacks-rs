@@ -170,11 +170,13 @@ function packList(packsDir) {
     .sort((a, b) => a.name.localeCompare(b.name, 'en-US'));
 }
 
-// Ports `packInfo` (registry.ts) + `pack info` (pack.ts): validate name, require
-// manifest.json, then print the full validated manifest.
+// Ports `packInfo` (registry.ts) + `pack info` (pack.ts): validate name (an
+// invalid name is an "invalid pack name" error, distinct from "pack not found",
+// matching registry.ts `assertValidName`), require manifest.json, then print the
+// full validated manifest.
 function packInfo(packsDir, name) {
   if (typeof name !== 'string' || !PACK_NAME_RE.test(name)) {
-    throw new Error(`pack not found: ${name}`);
+    throw new Error(`invalid pack name ${JSON.stringify(name)} (must match PACK_NAME_RE)`);
   }
   const dir = join(packsDir, name);
   if (!existsSync(join(dir, MANIFEST_FILENAME))) {
