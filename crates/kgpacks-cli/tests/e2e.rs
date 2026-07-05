@@ -186,10 +186,14 @@ fn cli_query_then_ask_runs_the_graph_rag_flow_end_to_end() {
 
 #[test]
 fn cli_status_lists_installed_packs_through_the_command_surface() {
-    // `status` needs no transport: drive it through the production `run` entry
-    // to prove the dispatch + registry read-path end to end over a real packs
-    // directory (one pack with a graph store, one without, plus a manifest-less
-    // directory that must be skipped).
+    // `status` needs no transport and never opens the store — it only checks the
+    // graph store's presence. Drive it through the production `run` entry to
+    // prove the dispatch + registry read-path end to end over a real packs
+    // directory (one pack with a graph store present, one without, plus a
+    // manifest-less directory that must be skipped). The "present" store is a
+    // plain marker file: `status` only stats it, so there is no need to build a
+    // real LadybugDB (which would load the shared `vector` extension and race
+    // the other e2e test).
     let tmp = tempdir().expect("tempdir");
     let packs_dir = tmp.path();
 
@@ -200,7 +204,7 @@ fn cli_status_lists_installed_packs_through_the_command_surface() {
         r#"{"name":"rustpack","version":"1.4.0"}"#,
     )
     .expect("write manifest");
-    build_pack_db(&with_db.join("graph.lbug"));
+    fs::write(with_db.join("graph.lbug"), b"").expect("write graph store marker");
 
     let no_db = packs_dir.join("emptypack");
     fs::create_dir_all(&no_db).expect("mkdir emptypack");
