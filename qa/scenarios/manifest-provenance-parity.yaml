@@ -1,0 +1,51 @@
+name: manifest-provenance-ts-parity
+description: >-
+  Outside-in cross-implementation parity check for the Rust manifest `provenance`
+  validation (kgpacks-packs::validate_manifest, reached through the `kgpacks
+  status` read-path) against the canonical agent-kgpacks-ts `validateManifest`
+  (`validateProvenance`). Drives the committed harness
+  (qa/manifest-provenance-parity/verify.sh), which materializes a shared packs
+  directory mixing valid `provenance` blocks (full, null-valued declared fields,
+  `provenance: null`, and none) with every documented malformed shape, then
+  diffs the Rust `kgpacks status` listing against the live TypeScript reference
+  oracle: both implementations must accept/reject exactly the same packs. Closes
+  agent-kgpacks-rs #28.
+version: "1.0"
+config:
+  timeout: 900000
+environment:
+  requires:
+    - "cargo (Rust toolchain) available on PATH"
+    - "node available on PATH (runs the TypeScript reference oracle)"
+    - "run from the agent-kgpacks-rs repo root"
+agents:
+  - name: cli
+    type: cli
+    config:
+      workingDirectory: "."
+metadata:
+  tags: [cli, parity, manifest, provenance, packs, ts-parity, read-path]
+  priority: high
+steps:
+  - name: run cross-implementation provenance validation parity check
+    agent: cli
+    action: run
+    description: >-
+      Run the Rust `kgpacks status` over a shared fixture packs directory whose
+      manifests exercise valid and malformed `provenance` blocks, and diff which
+      packs it accepts against the live agent-kgpacks-ts reference oracle.
+    params:
+      command: "./qa/manifest-provenance-parity/verify.sh"
+  - name: provenance validation is at parity
+    agent: cli
+    action: validate_output
+    description: The harness reports the Rust and TS provenance gates agree.
+    params:
+      text: "PROVENANCE_PARITY_OK"
+  - name: harness exits cleanly
+    agent: cli
+    action: validate_exit_code
+    description: A non-zero exit would signal a provenance-validation divergence.
+    params:
+      text: "0"
+assertions: []
