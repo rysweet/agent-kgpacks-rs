@@ -14,7 +14,7 @@ use std::path::Path;
 use kgpacks_agent::{
     Transport, TransportError, TransportOpenConfig, TransportResponse, TransportSession, Usage,
 };
-use kgpacks_cli::run_with_transport;
+use kgpacks_cli::{run, run_with_transport};
 use kgpacks_db::{Database, LogicalType, Value};
 use kgpacks_embeddings::Embedder;
 use tempfile::tempdir;
@@ -182,4 +182,51 @@ fn cli_query_then_ask_runs_the_graph_rag_flow_end_to_end() {
         ask_out.contains("\"s1\"") || ask_out.contains("\"s2\""),
         "ask JSON missing a cited section: {ask_out}"
     );
+}
+
+#[test]
+fn cli_status_lists_installed_packs_through_the_command_surface() {
+    // `status` needs no transport: drive it through the production `run` entry
+    // to prove the dispatch + registry read-path end to end over a real packs
+    // directory (one pack with a graph store, one without, plus a manifest-less
+    // directory that must be skipped).
+    let tmp = tempdir().expect("tempdir");
+    let packs_dir = tmp.path();
+
+    let with_db = packs_dir.join("rustpack");
+    fs::create_dir_all(&with_db).expect("mkdir rustpack");
+    fs::write(
+        with_db.join("manifest.json"),
+        r#"{"name":"rustpack","version":"1.4.0"}"#,
+    )
+    .expect("write manifest");
+    build_pack_db(&with_db.join("graph.lbug"));
+
+    let no_db = packs_dir.join("emptypack");
+    fs::create_dir_all(&no_db).expect("mkdir emptypack");
+    fs::write(
+        no_db.join("manifest.json"),
+        r#"{"name":"emptypack","version":"0.1.0"}"#,
+    )
+    .expect("write manifest");
+
+    fs::create_dir_all(packs_dir.join("junk")).expect("mkdir junk");
+
+    let out = run(&argv(&[
+        "--packs-dir",
+        packs_dir.to_str().unwrap(),
+        "status",
+    ]))
+    .expect("status command");
+
+    let value: serde_json::Value = serde_json::from_str(&out).expect("status JSON");
+    assert_eq!(value["packsDir"], packs_dir.display().to_string());
+    assert_eq!(value["count"], 2, "status JSON: {out}");
+    let packs = value["packs"].as_array().expect("packs array");
+    // Sorted by name: emptypack before rustpack.
+    assert_eq!(packs[0]["name"], "emptypack");
+    assert_eq!(packs[0]["dbPresent"], false);
+    assert_eq!(packs[1]["name"], "rustpack");
+    assert_eq!(packs[1]["version"], "1.4.0");
+    assert_eq!(packs[1]["dbPresent"], true);
 }

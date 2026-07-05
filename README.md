@@ -17,7 +17,8 @@ engine, RustyClawd / Copilot SDK for the agent).
 > seam, wired to the real RustyClawd / Copilot backend behind the `copilot`
 > feature. `kgpacks-query` adds the agent-grounded **graph-RAG query**
 > (`retrieve_and_synthesize`), and `kgpacks-cli` surfaces it end to end: `query`
-> prints ranked retrieval and `ask` prints a grounded, citation-bearing answer.
+> prints ranked retrieval, `ask` prints a grounded, citation-bearing answer, and
+> `status` reports the installed packs.
 > See the [roadmap](#porting-roadmap-m1m5) for what lands when.
 
 ## Target flow
@@ -111,7 +112,8 @@ workspace. As of M2, `kgpacks-db` consumes `lbug`; the others remain stubs.
   all behind an injectable `Transport` seam, with the real RustyClawd /
   Copilot-SDK adapter behind the `copilot` feature. `kgpacks-query` adds the
   agent-grounded graph-RAG query `retrieve_and_synthesize` (retrieval → grounded
-  synthesis), and `kgpacks-cli` surfaces the flow (`query` / `ask`). The broader
+  synthesis), and `kgpacks-cli` surfaces the flow (`query` / `ask`) plus the
+  read-path `status` command (installed-pack summary). The broader
   retrieval ENHANCEMENTS layer (cross-encoder, few-shot, Cypher-RAG, multi-doc
   synthesis), the `kgpacks-mcp` / `kgpacks-backend` HTTP surfaces, and the
   `parity/` harness remain follow-ups beyond this core flow.
@@ -352,7 +354,10 @@ the suite is fully offline.
 `kgpacks-query::retrieve_and_synthesize` is the **graph-RAG query**: it runs M4
 retrieval, hands the ranked sections to the agent as citation-tagged context,
 and returns the grounded answer plus its supporting hits. `kgpacks-cli` surfaces
-it (`query` → ranked JSON, `ask` → grounded answer JSON).
+it (`query` → ranked JSON, `ask` → grounded answer JSON). The read-path `status`
+command reports the resolved packs directory and the installed packs as JSON
+(`{ packsDir, count, packs: [{ name, version, dbPresent }] }`, sorted by name),
+backed by `kgpacks-packs::registry::list_packs`.
 
 Each reference module maps to a Rust module proven by a mirroring parity test:
 
@@ -365,16 +370,21 @@ Each reference module maps to a Rust module proven by a mirroring parity test:
 | `agent/src/{prompts,errors,constants}.ts`     | `kgpacks-agent::{prompts,errors,constants}`  | exercised by the above               |
 | `query/src/retriever.ts` `retrieveAndSynthesize` | `kgpacks-query::synthesis`                | `query/tests/synthesis.rs`           |
 | `cli/src/commands/query.ts` (+ `ask` flow)    | `kgpacks-cli` (`query` / `ask`)              | `cli/tests/e2e.rs`, unit tests       |
+| `cli/src/commands/status.ts` (+ `packs/registry.ts` `listPacks`) | `kgpacks-cli` (`status`) + `kgpacks-packs::registry::list_packs` | `cli/tests/e2e.rs`, `qa/status-parity/` |
 
 The agent parity suite mirrors the reference's `agent/test/*` structurally
 (valid shapes, fence-stripping, citation derivation, usage accounting,
 lifecycle, fail-closed errors) against a mock transport, and the CLI `e2e` test
 drives the full `build pack → vector retrieval → graph-RAG query` flow through
-the actual command surface offline. Scope notes: the real transport is gated
+the actual command surface offline. The `status` command additionally ships a
+cross-implementation parity harness (`qa/status-parity/`, driven by the
+`status-ts-parity` qa-team scenario) that diffs the Rust payload against a live
+`agent-kgpacks-ts` reference oracle. Scope notes: the real transport is gated
 behind the non-default `copilot` feature (compiled + linted in a dedicated CI
-step) so the default gates stay lean and hermetic; the retrieval ENHANCEMENTS
-layer, the MCP/backend HTTP surfaces, and the `parity/` harness remain
-follow-ups beyond this core flow.
+step) so the default gates stay lean and hermetic; the write/eval CLI path
+(`create`/`update`, `research-sources`, the `pack` group, and `eval`; issue
+#13), the retrieval ENHANCEMENTS layer, the MCP/backend HTTP surfaces, and the
+`parity/` harness remain follow-ups beyond this core flow.
 
 ## Quality audit
 

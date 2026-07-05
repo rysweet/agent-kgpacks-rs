@@ -8,13 +8,17 @@
 //! * [`pack`] — the LadybugDB-backed pack graph schema plus
 //!   [`build_pack`](pack::build_pack) / [`load_pack`](pack::load_pack), whose
 //!   round-trip over the graph store is the M2 acceptance gate.
+//! * [`registry`] — read-path queries over an install root
+//!   ([`list_packs`](registry::list_packs)), backing the CLI `status` command
+//!   (`packages/packs/src/registry.ts`).
 //!
-//! The registry, tarball installer and version resolution surfaces land in a
-//! later milestone.
+//! The tarball installer and version-resolution surfaces land in a later
+//! milestone.
 
 mod errors;
 pub mod manifest;
 pub mod pack;
+pub mod registry;
 pub mod versioning;
 
 pub use errors::{PacksError, Result};
@@ -32,3 +36,5 @@ pub use pack::{
     build_pack, load_pack, Article, BuiltPack, Entity, LoadedPack, PackContent,
     GRAPH_STORE_FILENAME, NODE_TABLE_DDL, REL_TABLE_DDL, SCHEMA,
 };
+
+pub use registry::{list_packs, InstalledPack};
