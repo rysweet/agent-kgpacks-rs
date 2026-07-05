@@ -1,0 +1,52 @@
+name: pack-ts-parity
+description: >-
+  Outside-in cross-implementation parity check for the Rust CLI read-path `pack`
+  command group (kgpacks-cli) against the canonical agent-kgpacks-ts `pack`
+  command group. Drives the committed parity harness (qa/pack-parity/verify.sh),
+  which materializes a shared packs directory (sort-discriminating name pairs, a
+  rich manifest with description / graph_stats / eval_scores / provenance / an
+  unknown key, an invalid manifest, a manifest-less directory, and a stray file)
+  and diffs the Rust `kgpacks pack {list,info,validate}` payloads against the
+  live TypeScript reference oracle plus path-independent goldens:
+  `pack list` -> [{ name, version, description }] sorted by name,
+  `pack info`  -> the pack's full manifest, and
+  `pack validate` -> { valid, name, version }.
+version: "1.0"
+config:
+  timeout: 900000
+environment:
+  requires:
+    - "cargo (Rust toolchain) available on PATH"
+    - "node available on PATH (runs the TypeScript reference oracle)"
+    - "run from the agent-kgpacks-rs repo root"
+agents:
+  - name: cli
+    type: cli
+    config:
+      workingDirectory: "."
+metadata:
+  tags: [cli, parity, pack, registry, ts-parity, read-path]
+  priority: high
+steps:
+  - name: run cross-implementation pack parity check
+    agent: cli
+    action: run
+    description: >-
+      Run the Rust `kgpacks pack {list,info,validate}` over a shared fixture
+      packs directory and diff each payload against the live agent-kgpacks-ts
+      reference oracle and the expected goldens.
+    params:
+      command: "./qa/pack-parity/verify.sh"
+  - name: pack payloads are at parity
+    agent: cli
+    action: validate_output
+    description: The harness reports structural parity with the TS reference.
+    params:
+      text: "PACK_PARITY_OK"
+  - name: harness exits cleanly
+    agent: cli
+    action: validate_exit_code
+    description: A non-zero exit would signal a parity divergence.
+    params:
+      text: "0"
+assertions: []

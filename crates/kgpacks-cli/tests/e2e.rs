@@ -234,3 +234,176 @@ fn cli_status_lists_installed_packs_through_the_command_surface() {
     assert_eq!(packs[1]["version"], "1.4.0");
     assert_eq!(packs[1]["dbPresent"], true);
 }
+
+/// Helper: write a manifest into `<packs_dir>/<name>/manifest.json`.
+fn write_pack_manifest(packs_dir: &Path, name: &str, manifest_json: &str) {
+    let dir = packs_dir.join(name);
+    fs::create_dir_all(&dir).expect("mkdir pack");
+    fs::write(dir.join("manifest.json"), manifest_json).expect("write manifest");
+}
+
+#[test]
+fn cli_pack_list_projects_and_sorts_installed_packs() {
+    // `pack list` reads the registry only — no store, no transport. Drive it
+    // through the production `run` entry over a real packs directory with a mix
+    // of present/absent descriptions, sort-discriminating names, and skipped
+    // entries (an invalid manifest and a manifest-less directory).
+    let tmp = tempdir().expect("tempdir");
+    let packs_dir = tmp.path();
+
+    write_pack_manifest(
+        packs_dir,
+        "bravo",
+        r#"{"name":"bravo","version":"0.5.0","description":"Bravo pack"}"#,
+    );
+    write_pack_manifest(packs_dir, "alpha", r#"{"name":"alpha","version":"1.0.0"}"#);
+    // Invalid manifest (missing version) and a manifest-less directory: skipped.
+    write_pack_manifest(packs_dir, "broken", r#"{"name":"broken"}"#);
+    fs::create_dir_all(packs_dir.join("no-manifest")).expect("mkdir no-manifest");
+
+    let out = run(&argv(&[
+        "--packs-dir",
+        packs_dir.to_str().unwrap(),
+        "pack",
+        "list",
+    ]))
+    .expect("pack list command");
+
+    let value: serde_json::Value = serde_json::from_str(&out).expect("pack list JSON");
+    let packs = value.as_array().expect("pack list is an array");
+    assert_eq!(packs.len(), 2, "pack list JSON: {out}");
+    // Sorted by name: alpha before bravo.
+    assert_eq!(packs[0]["name"], "alpha");
+    assert_eq!(packs[0]["version"], "1.0.0");
+    // Absent description defaults to "" (never null / missing).
+    assert_eq!(packs[0]["description"], "");
+    assert_eq!(packs[1]["name"], "bravo");
+    assert_eq!(packs[1]["description"], "Bravo pack");
+}
+
+#[test]
+fn cli_pack_info_prints_the_full_manifest() {
+    // `pack info <name>` prints the pack's full manifest, preserving optional
+    // sections and unknown keys verbatim (the on-disk snake_case shape).
+    let tmp = tempdir().expect("tempdir");
+    let packs_dir = tmp.path();
+    write_pack_manifest(
+        packs_dir,
+        "rich",
+        r#"{"name":"rich","version":"1.2.3","description":"Rich pack","graph_stats":{"articles":294,"size_mb":12.5},"channel":"stable"}"#,
+    );
+
+    let out = run(&argv(&[
+        "--packs-dir",
+        packs_dir.to_str().unwrap(),
+        "pack",
+        "info",
+        "rich",
+    ]))
+    .expect("pack info command");
+
+    let value: serde_json::Value = serde_json::from_str(&out).expect("pack info JSON");
+    assert_eq!(value["name"], "rich");
+    assert_eq!(value["version"], "1.2.3");
+    assert_eq!(value["description"], "Rich pack");
+    // Integral graph stats are emitted as integers, floats stay floats.
+    assert_eq!(value["graph_stats"]["articles"], 294);
+    assert_eq!(value["graph_stats"]["size_mb"], 12.5);
+    // Unknown top-level keys are preserved verbatim.
+    assert_eq!(value["channel"], "stable");
+}
+
+#[test]
+fn cli_pack_info_reports_missing_pack() {
+    let tmp = tempdir().expect("tempdir");
+    let err = run(&argv(&[
+        "--packs-dir",
+        tmp.path().to_str().unwrap(),
+        "pack",
+        "info",
+        "nope",
+    ]))
+    .expect_err("missing pack must error");
+    assert_eq!(err, "pack not found: nope");
+}
+
+#[test]
+fn cli_pack_validate_accepts_a_valid_pack() {
+    let tmp = tempdir().expect("tempdir");
+    let packs_dir = tmp.path();
+    write_pack_manifest(
+        packs_dir,
+        "goodpack",
+        r#"{"name":"goodpack","version":"2.1.0"}"#,
+    );
+
+    let out = run(&argv(&[
+        "--packs-dir",
+        packs_dir.to_str().unwrap(),
+        "pack",
+        "validate",
+        "goodpack",
+    ]))
+    .expect("pack validate command");
+
+    let value: serde_json::Value = serde_json::from_str(&out).expect("pack validate JSON");
+    assert_eq!(value["valid"], true);
+    assert_eq!(value["name"], "goodpack");
+    assert_eq!(value["version"], "2.1.0");
+}
+
+#[test]
+fn cli_pack_validate_rejects_an_invalid_manifest() {
+    let tmp = tempdir().expect("tempdir");
+    let packs_dir = tmp.path();
+    // Present but schema-invalid (missing required `version`).
+    write_pack_manifest(packs_dir, "brokenpack", r#"{"name":"brokenpack"}"#);
+
+    let err = run(&argv(&[
+        "--packs-dir",
+        packs_dir.to_str().unwrap(),
+        "pack",
+        "validate",
+        "brokenpack",
+    ]))
+    .expect_err("invalid manifest must error");
+    assert!(
+        err.to_lowercase().contains("version"),
+        "expected a version validation error, got: {err}"
+    );
+}
+
+#[test]
+fn cli_pack_validate_rejects_a_traversal_name() {
+    // A path-traversal name is rejected as "pack not found" BEFORE any path is
+    // built (name is gated on PACK_NAME_RE), so it can never escape the packs dir.
+    let tmp = tempdir().expect("tempdir");
+    let err = run(&argv(&[
+        "--packs-dir",
+        tmp.path().to_str().unwrap(),
+        "pack",
+        "validate",
+        "../secrets",
+    ]))
+    .expect_err("traversal name must error");
+    assert_eq!(err, "pack not found: ../secrets");
+}
+
+#[test]
+fn cli_pack_requires_a_known_subcommand() {
+    let tmp = tempdir().expect("tempdir");
+    let base = tmp.path().to_str().unwrap();
+
+    let missing = run(&argv(&["--packs-dir", base, "pack"])).expect_err("bare `pack` must error");
+    assert!(
+        missing.contains("missing pack subcommand"),
+        "got: {missing}"
+    );
+
+    let unknown = run(&argv(&["--packs-dir", base, "pack", "install"]))
+        .expect_err("unknown subcommand must error");
+    assert!(
+        unknown.contains("unknown pack subcommand: install"),
+        "got: {unknown}"
+    );
+}
