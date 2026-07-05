@@ -205,7 +205,11 @@ function packValidate(packsDir, name) {
 function sortKeys(value) {
   if (Array.isArray(value)) return value.map(sortKeys);
   if (value && typeof value === 'object') {
-    const out = {};
+    // Use a null-prototype accumulator so a key literally named `__proto__`
+    // becomes an ordinary own property instead of hitting the Object.prototype
+    // `__proto__` setter (which would silently drop it and blind the parity
+    // check to that prototype-pollution-sensitive key class).
+    const out = Object.create(null);
     for (const key of Object.keys(value).sort()) out[key] = sortKeys(value[key]);
     return out;
   }
