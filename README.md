@@ -190,6 +190,18 @@ let loaded = load_pack("/tmp/rust-expert")?;
 assert_eq!(loaded.graph_stats()?["articles"], 1.0);
 ```
 
+`validate_manifest` (the single schema gate behind `load_manifest` /
+`load_manifest_from_dir` / `build_pack` / `save_manifest`) is at full parity with
+the reference `validateManifest`: beyond `name`/`version`/`description` and the
+optional `graph_stats`/`eval_scores` blocks, it validates the optional build
+`provenance` block (`corpus` / `embedding` / `build` sections — declared string
+fields must be strings, `embedding.dimensions` must be a non-negative finite
+number) and deep-sanitizes it against prototype-pollution keys, mirroring
+`packages/packs/src/manifest.ts`. A manifest carrying a malformed `provenance`
+block is therefore rejected (and such a pack is skipped by `registry::list_packs`
+/ the `status` command) exactly as the reference rejects it. Cross-checked by
+`qa/manifest-provenance-parity` against the live TypeScript oracle.
+
 ## Ingestion pipeline (M3)
 
 `kgpacks-ingestion` drives the **build-pack → ingest** flow over the working

@@ -32,15 +32,15 @@ const DB_FILENAME = 'pack.db'; // reference store filename (RS port uses graph.l
 const SEMVER_RE =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-.]+)?(?:\+[0-9A-Za-z-.]+)?$/;
 
-// Ports loadManifestFromDir + the validate gate. NOTE: this mirrors the *current
-// Rust* manifest gate that `list_packs` relies on — a valid `name` (PACK_NAME_RE)
-// and `version` (SemVer). The full reference `validateManifest` additionally
-// validates optional `provenance`/`graph_stats`/`eval_scores` blocks; the Rust
-// port does not yet validate `provenance` (tracked as a separate manifest-parity
-// follow-up), so this oracle deliberately matches the Rust gate the `status`
-// read-path actually uses. The status fixtures never include those optional
-// blocks, so both sides agree on which directories are valid packs. Throws on any
-// violation so the caller skips the directory, exactly like the reference.
+// Ports loadManifestFromDir + the validate gate. This mirrors the reference
+// `validateManifest` gate that `list_packs` relies on: a valid `name`
+// (PACK_NAME_RE), a valid `version` (SemVer), AND — since the Rust port now
+// validates it at parity (agent-kgpacks-rs #28) — the optional `provenance`
+// block (see `validateProvenance` below). `graph_stats`/`eval_scores` are also
+// validated by both implementations, but the status fixtures never carry those
+// blocks, so this oracle validates only what the fixtures exercise (name,
+// version, provenance). Throws on any violation so the caller skips the
+// directory, exactly like the reference.
 function loadManifestFromDir(packDir) {
   const raw = readFileSync(join(packDir, MANIFEST_FILENAME), 'utf8');
   const value = JSON.parse(raw);
@@ -54,7 +54,46 @@ function loadManifestFromDir(packDir) {
   if (typeof version !== 'string' || !SEMVER_RE.test(version)) {
     throw new Error('invalid manifest version');
   }
+  if (value.provenance != null) validateProvenance(value.provenance);
   return { name, version };
+}
+
+// Ports packages/packs/src/manifest.ts `validateProvenance`: each present
+// section must be an object; declared string fields (when present) must be
+// strings; and `embedding.dimensions` (when present) must be a non-negative
+// finite number. Undeterminable fields recorded as null/absent are allowed and
+// unknown sections/fields are tolerated.
+const PROVENANCE_STRING_FIELDS = {
+  corpus: ['name', 'commit', 'date'],
+  embedding: ['model'],
+  build: ['date', 'tool_version'],
+};
+
+function isPlainObject(v) {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+function validateProvenance(value) {
+  if (!isPlainObject(value)) throw new Error('provenance must be an object');
+  for (const [section, fields] of Object.entries(PROVENANCE_STRING_FIELDS)) {
+    const sec = value[section];
+    if (sec == null) continue;
+    if (!isPlainObject(sec)) throw new Error(`provenance.${section} must be an object`);
+    for (const field of fields) {
+      const fieldValue = sec[field];
+      if (fieldValue == null) continue;
+      if (typeof fieldValue !== 'string') {
+        throw new Error(`provenance.${section}.${field} must be a string`);
+      }
+    }
+  }
+  const embedding = value.embedding;
+  if (isPlainObject(embedding) && embedding.dimensions != null) {
+    const d = embedding.dimensions;
+    if (typeof d !== 'number' || !Number.isFinite(d) || d < 0) {
+      throw new Error('provenance.embedding.dimensions must be a non-negative finite number');
+    }
+  }
 }
 
 // Ports packages/packs/src/registry.ts listPacks.

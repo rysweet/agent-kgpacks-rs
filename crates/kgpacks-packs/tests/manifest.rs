@@ -28,6 +28,7 @@ fn valid_manifest() -> PackManifest {
             ("size_mb", 18.4),
         ])),
         eval_scores: Some(stats(&[("recall_at_5", 0.81), ("faithfulness", 0.92)])),
+        provenance: None,
         extra: BTreeMap::new(),
     }
 }
@@ -130,6 +131,115 @@ fn validate_manifest_rejects_malformed_eval_scores() {
 }
 
 #[test]
+fn validate_manifest_accepts_a_valid_provenance_block() {
+    // Mirrors the reference `PackProvenance` shape: corpus/embedding/build with
+    // declared string fields and a numeric `embedding.dimensions`.
+    let value = json!({
+        "name": "cve",
+        "version": "1.0.0",
+        "provenance": {
+            "corpus": { "name": "cvelistV5", "commit": "abc123", "date": "2026-01-01" },
+            "embedding": { "model": "bge-base-en-v1.5", "dimensions": 768 },
+            "build": { "date": "2026-01-02T00:00:00Z", "tool_version": "0.1.0" }
+        }
+    });
+    let m = validate_manifest(&value).expect("valid provenance accepted");
+    let prov = m.provenance.clone().expect("provenance preserved");
+    assert_eq!(prov["embedding"]["dimensions"], json!(768));
+    // Survives a to_value/validate round trip unchanged.
+    assert_eq!(validate_manifest(&m.to_value()).expect("round-trip"), m);
+}
+
+#[test]
+fn validate_manifest_treats_present_null_provenance_as_absent_but_preserves_it() {
+    // Real catalog manifests may carry `provenance: null`; the reference re-emits
+    // it, so an explicit null is preserved (like `eval_scores: null`).
+    let value = json!({ "name": "ok", "version": "1.0.0", "provenance": null });
+    let m = validate_manifest(&value).expect("null provenance accepted");
+    assert!(m.provenance.is_none());
+    assert_eq!(m.extra.get("provenance"), Some(&Value::Null));
+    assert_eq!(validate_manifest(&m.to_value()).expect("round-trip"), m);
+}
+
+#[test]
+fn validate_manifest_allows_null_provenance_fields_and_preserves_unknown_ones() {
+    // Undeterminable declared fields recorded as null are allowed, and unknown
+    // sections/fields are tolerated + preserved (not validated), per the reference.
+    let value = json!({
+        "name": "ok",
+        "version": "1.0.0",
+        "provenance": {
+            "corpus": { "name": "cvelistV5", "commit": null, "date": null },
+            "embedding": { "model": "hash", "notes": "extra-key-tolerated" },
+            "extra_section": { "anything": 1 }
+        }
+    });
+    let m = validate_manifest(&value).expect("null/unknown provenance fields tolerated");
+    let prov = m.provenance.expect("provenance preserved");
+    assert_eq!(prov["embedding"]["notes"], json!("extra-key-tolerated"));
+    assert_eq!(prov["extra_section"]["anything"], json!(1));
+}
+
+#[test]
+fn validate_manifest_accepts_zero_absent_and_float_embedding_dimensions() {
+    for dims in [json!(0), json!(768.0), json!(null)] {
+        let value = json!({
+            "name": "ok",
+            "version": "1.0.0",
+            "provenance": { "embedding": { "model": "m", "dimensions": dims } }
+        });
+        assert!(
+            validate_manifest(&value).is_ok(),
+            "expected acceptance for {value}"
+        );
+    }
+}
+
+#[test]
+fn validate_manifest_rejects_malformed_provenance() {
+    // Each case mirrors a documented reference `validateProvenance` rejection.
+    let cases = [
+        json!("not-an-object"),                       // provenance must be an object
+        json!(["array"]),                             // provenance must be an object
+        json!({ "corpus": "not-an-object" }),         // section must be an object
+        json!({ "corpus": { "name": 123 } }),         // declared field must be a string
+        json!({ "build": { "tool_version": true } }), // declared field must be a string
+        json!({ "embedding": { "dimensions": -1 } }), // dimensions non-negative
+        json!({ "embedding": { "dimensions": "768" } }), // dimensions must be a number
+    ];
+    for provenance in cases {
+        let value = json!({ "name": "ok", "version": "1.0.0", "provenance": provenance });
+        assert!(
+            validate_manifest(&value).is_err(),
+            "expected rejection for {value}"
+        );
+    }
+}
+
+#[test]
+fn validate_manifest_deep_sanitizes_dangerous_keys_inside_provenance() {
+    // The reference deep-sanitizes the provenance block; dangerous keys are
+    // stripped at every nesting level while other keys are preserved.
+    let value: Value = serde_json::from_str(
+        r#"{"name":"ok","version":"1.0.0","provenance":{"corpus":{"name":"x","__proto__":{"polluted":true}},"__proto__":"evil"}}"#,
+    )
+    .expect("json");
+    let m = validate_manifest(&value).expect("valid after sanitize");
+    let prov = m.provenance.expect("provenance preserved");
+    let obj = prov.as_object().expect("provenance object");
+    assert!(
+        !obj.contains_key("__proto__"),
+        "top-level dangerous key should be stripped"
+    );
+    let corpus = obj["corpus"].as_object().expect("corpus object");
+    assert!(
+        !corpus.contains_key("__proto__"),
+        "nested dangerous key should be stripped"
+    );
+    assert_eq!(corpus["name"], json!("x"));
+}
+
+#[test]
 fn validate_manifest_strips_dangerous_keys() {
     let value =
         serde_json::from_str(r#"{"name":"safe","version":"1.0.0","__proto__":{"polluted":true}}"#)
@@ -220,6 +330,7 @@ fn save_manifest_validates_before_writing() {
         description: None,
         graph_stats: None,
         eval_scores: None,
+        provenance: None,
         extra: BTreeMap::new(),
     };
     assert!(save_manifest(&path, &invalid).is_err());
