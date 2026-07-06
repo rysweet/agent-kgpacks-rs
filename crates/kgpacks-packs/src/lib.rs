@@ -8,6 +8,11 @@
 //! * [`pack`] — the LadybugDB-backed pack graph schema plus
 //!   [`build_pack`](pack::build_pack) / [`load_pack`](pack::load_pack), whose
 //!   round-trip over the graph store is the M2 acceptance gate.
+//! * [`release`] — the multi-part release index (split/accounting) used to
+//!   publish and re-verify packs larger than
+//!   [`MAX_SINGLE_ARTIFACT_BYTES`](release::MAX_SINGLE_ARTIFACT_BYTES).
+//! * [`sha256`] — a self-contained SHA-256 (no external crypto dependency)
+//!   backing the release index's per-part and overall content hashes.
 //! * [`registry`] — read-path queries over an install root
 //!   ([`list_packs`](registry::list_packs)), backing the CLI `status` command
 //!   (`packages/packs/src/registry.ts`).
@@ -19,6 +24,8 @@ mod errors;
 pub mod manifest;
 pub mod pack;
 pub mod registry;
+pub mod release;
+pub mod sha256;
 pub mod versioning;
 
 pub use errors::{PacksError, Result};
@@ -33,8 +40,16 @@ pub use versioning::{
 };
 
 pub use pack::{
-    build_pack, load_pack, Article, BuiltPack, Entity, LoadedPack, PackContent,
-    GRAPH_STORE_FILENAME, NODE_TABLE_DDL, REL_TABLE_DDL, SCHEMA,
+    build_pack, load_pack, plan_load_statements, Article, BuiltPack, Entity, LoadedPack,
+    PackContent, PlannedStatement, CREATE_HAS_ENTITY_CYPHER, GRAPH_STORE_FILENAME, NODE_TABLE_DDL,
+    REL_TABLE_DDL, SCHEMA,
 };
+
+pub use release::{
+    part_accounting, plan_multipart_release, requires_multipart, MultiPartIndex, PartAccounting,
+    PartEntry, MAX_SINGLE_ARTIFACT_BYTES,
+};
+
+pub use sha256::{sha256_hex, Sha256};
 
 pub use registry::{list_packs, InstalledPack};

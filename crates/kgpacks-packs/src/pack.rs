@@ -133,12 +133,116 @@ pub struct BuiltPack {
     pub manifest: PackManifest,
 }
 
-/// Apply the pack graph [`SCHEMA`] to a connection (node tables, then rels).
-fn apply_schema(conn: &kgpacks_db::Connection<'_>) -> Result<()> {
-    for ddl in SCHEMA {
-        conn.run(ddl)?;
+/// A single planned load statement: Cypher text plus its bound parameters.
+///
+/// Separating the *plan* (what statements a load issues) from *execution*
+/// (running them against a store) keeps the loader's DB-statement shape and
+/// count observable without a live LadybugDB — that is what the WS5
+/// linear-scaling guard inspects. The [`cypher`](Self::cypher) is public so a
+/// test can assert no edge-creation statement uses the O(N²) comma two-pattern
+/// `MATCH (a {..}), (b {..})`; parameters stay internal.
+#[derive(Debug, Clone)]
+pub struct PlannedStatement {
+    /// The Cypher statement text (parameters are bound separately).
+    pub cypher: String,
+    params: Vec<(&'static str, Value)>,
+}
+
+impl PlannedStatement {
+    fn ddl(cypher: &str) -> Self {
+        Self {
+            cypher: cypher.to_string(),
+            params: Vec::new(),
+        }
     }
-    Ok(())
+
+    fn with_params(cypher: &str, params: Vec<(&'static str, Value)>) -> Self {
+        Self {
+            cypher: cypher.to_string(),
+            params,
+        }
+    }
+
+    /// Run this statement on `conn` (no-params branch when there are none, so
+    /// schema DDL still goes through the plain [`run`](kgpacks_db::Connection::run)
+    /// path exactly as before).
+    fn run(self, conn: &kgpacks_db::Connection<'_>) -> Result<()> {
+        if self.params.is_empty() {
+            conn.run(&self.cypher)?;
+        } else {
+            conn.run_params(&self.cypher, self.params)?;
+        }
+        Ok(())
+    }
+}
+
+/// Cypher that creates one `HAS_ENTITY` edge between an existing `Article` and
+/// `Entity`, each located by its **primary key** in its own single `MATCH`.
+///
+/// Two PK-indexed point lookups (each returns exactly one node) replace the
+/// O(N²) comma two-pattern `MATCH (a {..}), (e {..})`, whose cartesian shape
+/// forces the streaming loader toward quadratic work as record counts grow.
+pub const CREATE_HAS_ENTITY_CYPHER: &str = "MATCH (a:Article {title: $title}) \
+     MATCH (e:Entity {entity_id: $entity_id}) \
+     CREATE (a)-[:HAS_ENTITY]->(e)";
+
+/// The full, ordered list of statements a [`build_pack`] load issues for
+/// `content`: schema DDL, then one `CREATE` per article, per entity, and per
+/// `HAS_ENTITY` edge.
+///
+/// The count is linear in the number of records (a fixed schema prefix plus one
+/// statement per record), and every edge statement uses [`CREATE_HAS_ENTITY_CYPHER`]
+/// (PK-indexed single-`MATCH`), never the comma two-pattern — the two properties
+/// the WS5 guard asserts.
+pub fn plan_load_statements(content: &PackContent) -> Vec<PlannedStatement> {
+    let mut statements = Vec::with_capacity(
+        SCHEMA.len()
+            + content.articles.len()
+            + content.entities.len()
+            + content.article_entities.len(),
+    );
+
+    for ddl in SCHEMA {
+        statements.push(PlannedStatement::ddl(ddl));
+    }
+
+    for article in &content.articles {
+        statements.push(PlannedStatement::with_params(
+            "CREATE (:Article {title: $title, category: $category, \
+             word_count: $word_count, expansion_depth: $expansion_depth})",
+            vec![
+                ("title", Value::String(article.title.clone())),
+                ("category", Value::String(article.category.clone())),
+                ("word_count", Value::Int64(article.word_count)),
+                ("expansion_depth", Value::Int64(article.expansion_depth)),
+            ],
+        ));
+    }
+
+    for entity in &content.entities {
+        statements.push(PlannedStatement::with_params(
+            "CREATE (:Entity {entity_id: $entity_id, name: $name, \
+             type: $type, description: $description})",
+            vec![
+                ("entity_id", Value::String(entity.entity_id.clone())),
+                ("name", Value::String(entity.name.clone())),
+                ("type", Value::String(entity.type_.clone())),
+                ("description", Value::String(entity.description.clone())),
+            ],
+        ));
+    }
+
+    for (article_title, entity_id) in &content.article_entities {
+        statements.push(PlannedStatement::with_params(
+            CREATE_HAS_ENTITY_CYPHER,
+            vec![
+                ("title", Value::String(article_title.clone())),
+                ("entity_id", Value::String(entity_id.clone())),
+            ],
+        ));
+    }
+
+    statements
 }
 
 /// Build a pack at `pack_dir`: materialize `content` into a LadybugDB graph store
@@ -202,43 +306,8 @@ fn materialize_store(graph_path: &Path, content: &PackContent) -> Result<()> {
     let mut db = Database::open_with_options(graph_path, options)?;
     {
         let conn = db.connect()?;
-        apply_schema(&conn)?;
-
-        for article in &content.articles {
-            conn.run_params(
-                "CREATE (:Article {title: $title, category: $category, \
-                 word_count: $word_count, expansion_depth: $expansion_depth})",
-                vec![
-                    ("title", Value::String(article.title.clone())),
-                    ("category", Value::String(article.category.clone())),
-                    ("word_count", Value::Int64(article.word_count)),
-                    ("expansion_depth", Value::Int64(article.expansion_depth)),
-                ],
-            )?;
-        }
-
-        for entity in &content.entities {
-            conn.run_params(
-                "CREATE (:Entity {entity_id: $entity_id, name: $name, \
-                 type: $type, description: $description})",
-                vec![
-                    ("entity_id", Value::String(entity.entity_id.clone())),
-                    ("name", Value::String(entity.name.clone())),
-                    ("type", Value::String(entity.type_.clone())),
-                    ("description", Value::String(entity.description.clone())),
-                ],
-            )?;
-        }
-
-        for (article_title, entity_id) in &content.article_entities {
-            conn.run_params(
-                "MATCH (a:Article {title: $title}), (e:Entity {entity_id: $entity_id}) \
-                 CREATE (a)-[:HAS_ENTITY]->(e)",
-                vec![
-                    ("title", Value::String(article_title.clone())),
-                    ("entity_id", Value::String(entity_id.clone())),
-                ],
-            )?;
+        for statement in plan_load_statements(content) {
+            statement.run(&conn)?;
         }
     }
     db.close();
