@@ -8,8 +8,12 @@
 //! * [`pack`] — the LadybugDB-backed pack graph schema plus
 //!   [`build_pack`](pack::build_pack) / [`load_pack`](pack::load_pack), whose
 //!   round-trip over the graph store is the M2 acceptance gate.
-//! * [`release`] — the multi-part release index (split/accounting) used to
-//!   publish and re-verify packs larger than
+//! * [`release`] — the pack-release model covering both the versioned
+//!   release-tag/version/provenance derivation (`scripts/release-pack.mjs` +
+//!   `packVersionFromReleaseTag`): dated tags `<name>-YYYY.MM[.N]` derived to
+//!   unpadded SemVer, the stable `packs` latest-pointer, and the
+//!   `<name>.pack-release.json` provenance mirror; and the multi-part release
+//!   index (split/accounting) used to publish and re-verify packs larger than
 //!   [`MAX_SINGLE_ARTIFACT_BYTES`](release::MAX_SINGLE_ARTIFACT_BYTES).
 //! * [`sha256`] — a self-contained SHA-256 (no external crypto dependency)
 //!   backing the release index's per-part and overall content hashes.
@@ -17,7 +21,7 @@
 //!   ([`list_packs`](registry::list_packs)), backing the CLI `status` command
 //!   (`packages/packs/src/registry.ts`).
 //!
-//! The tarball installer and version-resolution surfaces land in a later
+//! The tarball installer and byte-level release packaging land in a later
 //! milestone.
 
 mod errors;
@@ -39,7 +43,15 @@ pub use manifest::{
 };
 
 pub use versioning::{
-    compare_versions, is_valid_semver, latest_version, parse_version, sort_versions, ParsedVersion,
+    compare_versions, is_valid_semver, latest_version, pack_version_from_release_tag,
+    parse_version, sort_versions, ParsedVersion,
+};
+
+pub use release::{
+    build_release_index, build_release_provenance, iso8601_utc_from_unix, latest_release_tag,
+    now_iso8601_utc, pack_release_filename, plan_release, publish_targets, resolve_model,
+    resolve_release_version, PackReleaseIndex, ProvenanceOverrides, ReleasePart, ReleasePlan,
+    LATEST_POINTER_TAG, RELEASE_INDEX_FORMAT,
 };
 
 pub use pack::{

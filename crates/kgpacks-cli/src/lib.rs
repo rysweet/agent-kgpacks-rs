@@ -19,7 +19,7 @@ use kgpacks_db::{Database, GraphStore};
 use kgpacks_embeddings::Embedder;
 use kgpacks_eval::{EvalCase, Harness};
 use kgpacks_ingestion::Ingestor;
-use kgpacks_packs::PackManifest;
+use kgpacks_packs::{plan_release, PackManifest, ProvenanceOverrides, LATEST_POINTER_TAG};
 use kgpacks_query::{
     retrieve_and_synthesize, PackRetriever, RetrieveMode, RetrieveOptions, Retriever,
 };
@@ -90,6 +90,7 @@ fn help_text() -> String {
         "  pack list                                                 installed packs (name, version, description) as JSON",
         "  pack info <pack>                                          a pack's full manifest as JSON",
         "  pack validate <pack>                                      validate a pack's manifest as JSON",
+        "  pack release-plan <pack> [--tag <t>]                      offline pack-release plan (version, provenance, tags) as JSON",
         "  demo                                                      smoke-test the pipeline",
         "  version                                                   print the version",
         "",
@@ -277,23 +278,28 @@ fn cmd_status(packs_dir: &Path) -> Result<String, String> {
     serde_json::to_string_pretty(&json).map_err(|e| e.to_string())
 }
 
-/// `pack <subcommand>` — read-path registry management.
+/// `pack <subcommand>` — read-path registry management + offline release plan.
 ///
-/// Ports the READ-PATH subset of `cli/src/commands/pack.ts`: the deterministic,
-/// offline subcommands that only *read* the installed-pack registry —
-/// `list`, `info`, and `validate`. The write/network subcommands (`install`,
-/// `pull`, `remove`) and the ingestion/eval verbs (`create`, `update`, `eval`)
-/// remain follow-ups (issue #13), consistent with the Rust port being the
-/// read-path subset of the TypeScript CLI.
+/// Ports the READ-PATH subset of `cli/src/commands/pack.ts` plus the offline
+/// projection of the release tooling (`scripts/release-pack.mjs`): the
+/// deterministic, network-free subcommands `list`, `info`, `validate`, and
+/// `release-plan`. The byte-level packaging + `gh` upload behind `release-plan`,
+/// and the write/network subcommands (`install`, `pull`, `remove`) and the
+/// ingestion/eval verbs (`create`, `update`, `eval`) remain follow-ups (issue
+/// #13), consistent with the Rust port being the read-path subset of the
+/// TypeScript CLI.
 fn cmd_pack(packs_dir: &Path, args: &[String]) -> Result<String, String> {
     match args.first().map(String::as_str) {
         Some("list") => cmd_pack_list(packs_dir),
         Some("info") => cmd_pack_info(packs_dir, args.get(1)),
         Some("validate") => cmd_pack_validate(packs_dir, args.get(1)),
+        Some("release-plan") => cmd_pack_release_plan(packs_dir, &args[1..]),
         Some(other) => Err(format!(
-            "unknown pack subcommand: {other} (expected: list, info, validate)"
+            "unknown pack subcommand: {other} (expected: list, info, validate, release-plan)"
         )),
-        None => Err("missing pack subcommand (expected: list, info, validate)".to_string()),
+        None => Err(
+            "missing pack subcommand (expected: list, info, validate, release-plan)".to_string(),
+        ),
     }
 }
 
@@ -370,6 +376,67 @@ fn cmd_pack_validate(packs_dir: &Path, name: Option<&String>) -> Result<String, 
         "version": manifest.version,
     });
     serde_json::to_string_pretty(&json).map_err(|e| e.to_string())
+}
+
+/// `pack release-plan <pack> [--tag <tag>] [--model <id>] [--corpus-commit <sha>]
+/// [--corpus-date <date>]` — the offline plan for publishing a pack release.
+///
+/// Surfaces [`kgpacks_packs::plan_release`]: the pure, network-free projection
+/// of `scripts/release-pack.mjs` (the half a `--dry-run` computes before
+/// packaging). It resolves the published `version` from the (dated) `--tag`
+/// (defaulting to the stable `packs` latest-pointer), mirrors the manifest build
+/// `provenance` into the release index (filling gaps from the overrides + a
+/// release-time `build.date`), and reports the `publishTargets` (the dated tag
+/// plus the `packs` pointer so `pack pull` still resolves latest) and the
+/// `<name>.pack-release.json` `indexFilename`. Output is pretty JSON; the
+/// byte-level packaging + `gh` upload remain follow-ups (issue #13).
+fn cmd_pack_release_plan(packs_dir: &Path, args: &[String]) -> Result<String, String> {
+    let mut name: Option<&String> = None;
+    let mut tag = LATEST_POINTER_TAG.to_string();
+    let mut overrides = ProvenanceOverrides::default();
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--tag" => tag = flag_value(args, &mut i, "--tag")?,
+            "--model" => overrides.model = Some(flag_value(args, &mut i, "--model")?),
+            "--corpus-commit" => {
+                overrides.corpus_commit = Some(flag_value(args, &mut i, "--corpus-commit")?)
+            }
+            "--corpus-date" => {
+                overrides.corpus_date = Some(flag_value(args, &mut i, "--corpus-date")?)
+            }
+            other if other.starts_with("--") => return Err(format!("unknown flag: {other}")),
+            _ => {
+                if name.is_some() {
+                    return Err(format!("unexpected extra argument: {}", args[i]));
+                }
+                name = Some(&args[i]);
+            }
+        }
+        i += 1;
+    }
+
+    let name = name.ok_or_else(|| "missing <pack> argument".to_string())?;
+    if !kgpacks_packs::pack_name_re().is_match(name) {
+        return Err(format!("invalid pack name: {name}"));
+    }
+    let dir = packs_dir.join(name);
+    if !kgpacks_packs::manifest_path_in(&dir).exists() {
+        return Err(format!("pack not found: {name}"));
+    }
+
+    let now = kgpacks_packs::now_iso8601_utc();
+    let plan = plan_release(&dir, &tag, &overrides, &now).map_err(|e| e.to_string())?;
+    serde_json::to_string_pretty(&plan.to_value()).map_err(|e| e.to_string())
+}
+
+/// Read the value following a `--flag` at `args[*i]`, advancing `*i` past it.
+fn flag_value(args: &[String], i: &mut usize, flag: &str) -> Result<String, String> {
+    *i += 1;
+    args.get(*i)
+        .cloned()
+        .ok_or_else(|| format!("{flag} requires a value"))
 }
 
 /// Compare two pack names the way the reference CLI's `name.localeCompare(...)`
@@ -514,6 +581,7 @@ mod tests {
         assert!(out.contains("pack list"));
         assert!(out.contains("pack info"));
         assert!(out.contains("pack validate"));
+        assert!(out.contains("pack release-plan"));
     }
 
     #[test]
@@ -717,6 +785,83 @@ mod tests {
         assert!(cmd_pack(Path::new("/tmp"), &["install".to_string()])
             .unwrap_err()
             .contains("unknown pack subcommand: install"));
+    }
+
+    #[test]
+    fn pack_release_plan_projects_dated_tag_and_mirrors_provenance() {
+        use std::fs;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let pack = root.join("cve");
+        fs::create_dir_all(&pack).unwrap();
+        fs::write(
+            pack.join("manifest.json"),
+            r#"{"name":"cve","version":"0.1.0","provenance":{"corpus":{"name":"cvelistV5","commit":"abc123","date":"2026-01-01"},"embedding":{"model":"Xenova/bge-base-en-v1.5","dimensions":768},"build":{"date":"2026-01-02T00:00:00Z","tool_version":"0.1.0"}}}"#,
+        )
+        .unwrap();
+
+        let args = ["release-plan", "cve", "--tag", "cve-2025.06"].map(String::from);
+        let out = cmd_pack(root, &args).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+
+        assert_eq!(value["name"], "cve");
+        assert_eq!(value["tag"], "cve-2025.06");
+        // Dated tag → UNPADDED SemVer core.
+        assert_eq!(value["version"], "2025.6.0");
+        // Dated release moves the stable `packs` latest-pointer too.
+        assert_eq!(
+            value["publishTargets"],
+            serde_json::json!(["cve-2025.06", "packs"])
+        );
+        assert_eq!(value["indexFilename"], "cve.pack-release.json");
+        // Provenance mirrored from the manifest (build.date present → not defaulted).
+        assert_eq!(value["provenance"]["corpus"]["commit"], "abc123");
+        assert_eq!(value["provenance"]["embedding"]["dimensions"], 768);
+        assert_eq!(value["provenance"]["build"]["date"], "2026-01-02T00:00:00Z");
+    }
+
+    #[test]
+    fn pack_release_plan_defaults_to_the_packs_pointer() {
+        use std::fs;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let pack = root.join("cve");
+        fs::create_dir_all(&pack).unwrap();
+        fs::write(
+            pack.join("manifest.json"),
+            r#"{"name":"cve","version":"7.7.7","provenance":{"build":{"date":"2026-01-02T00:00:00Z"}}}"#,
+        )
+        .unwrap();
+
+        // No --tag: defaults to the `packs` latest-pointer, which carries no
+        // dated version so the plan falls back to the manifest version.
+        let args = ["release-plan", "cve"].map(String::from);
+        let out = cmd_pack(root, &args).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(value["tag"], "packs");
+        assert_eq!(value["version"], "7.7.7");
+        assert_eq!(value["publishTargets"], serde_json::json!(["packs"]));
+    }
+
+    #[test]
+    fn pack_release_plan_reports_missing_and_invalid_packs() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // Missing pack.
+        let args = ["release-plan", "ghost"].map(String::from);
+        assert_eq!(
+            cmd_pack(tmp.path(), &args).unwrap_err(),
+            "pack not found: ghost"
+        );
+        // Missing <pack> argument.
+        let args = ["release-plan"].map(String::from);
+        assert!(cmd_pack(tmp.path(), &args)
+            .unwrap_err()
+            .contains("missing <pack> argument"));
+        // Unknown flag.
+        let args = ["release-plan", "cve", "--nope"].map(String::from);
+        assert!(cmd_pack(tmp.path(), &args)
+            .unwrap_err()
+            .contains("unknown flag: --nope"));
     }
 
     #[test]
