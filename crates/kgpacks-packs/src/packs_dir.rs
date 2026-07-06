@@ -13,6 +13,11 @@
 //! 3. the **XDG default**: `$XDG_DATA_HOME/kgpacks` when `XDG_DATA_HOME` is set
 //!    (and non-empty), else `~/.local/share/kgpacks`.
 //!
+//! This port targets the Linux/macOS XDG convention (the repo's CI and default
+//! target). The reference port's Windows `%LOCALAPPDATA%` default branch is
+//! intentionally out of scope here; `--packs-dir` / `KGPACKS_PACKS_DIR` remain
+//! the portable overrides on any platform.
+//!
 //! Empty or whitespace-only overrides (both the explicit argument and the env
 //! var) are treated as **unset**, so a blank value falls through to the next
 //! level rather than resolving to an empty path.
@@ -72,17 +77,6 @@ fn resolve_packs_dir_from(
         return PathBuf::from(dir);
     }
     default_packs_dir_from(xdg_data_home, home)
-}
-
-/// The XDG default packs directory, read from the process environment.
-///
-/// `$XDG_DATA_HOME/kgpacks` when `XDG_DATA_HOME` is set (non-empty), else
-/// `~/.local/share/kgpacks`.
-pub fn default_packs_dir() -> PathBuf {
-    default_packs_dir_from(
-        std::env::var("XDG_DATA_HOME").ok().as_deref(),
-        std::env::var("HOME").ok().as_deref(),
-    )
 }
 
 /// Resolve the packs directory from an optional explicit override, reading the
