@@ -1,0 +1,21 @@
+name: eval-harness-offline-suite
+app_type: cli
+description: >
+  WS1 (#16) — the kgpacks-eval harness (path-confined loader, full/stratified
+  sampling, pure metrics, the run_eval orchestrator over injectable Arm/Judge
+  seams, and the deterministic recall metric) is fully covered offline. Runs the
+  crate's complete test suite; a non-zero cargo exit fails the scenario.
+agents:
+  - name: cargo
+    type: cli
+    command: bash
+steps:
+  - action: run
+    description: Run the full kgpacks-eval test suite (unit + integration), offline.
+    params:
+      command: "cargo test -p kgpacks-eval --locked"
+    timeout: 300000
+assertions:
+  - type: output_contains
+    params:
+      value: "test result: ok"

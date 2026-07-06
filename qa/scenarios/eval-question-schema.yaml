@@ -1,0 +1,22 @@
+name: cve-eval-question-schema
+app_type: cli
+description: >
+  WS1 (#16) — the committed CVE eval question set loads through the path-confined
+  DirQuestionLoader and meets the schema acceptance: >=12 well-formed questions
+  with unique ids stamped pack_id "cve", of which >=6 reference real, recent
+  (2024/2025) CVEs and carry a non-empty reference answer. Runs the crate's
+  schema acceptance test; a non-zero cargo exit fails the scenario.
+agents:
+  - name: cargo
+    type: cli
+    command: bash
+steps:
+  - action: run
+    description: Run the CVE eval-question schema acceptance test.
+    params:
+      command: "cargo test -p kgpacks-eval --test eval_questions_schema --locked"
+    timeout: 300000
+assertions:
+  - type: output_contains
+    params:
+      value: "test result: ok"

@@ -1,0 +1,100 @@
+[
+  {
+    "id": "cve-2024-3094-xz-utils",
+    "question": "What is CVE-2024-3094 and why is it considered so severe?",
+    "reference_answer": "CVE-2024-3094 is a supply-chain backdoor covertly inserted into the XZ Utils (liblzma) compression library in versions 5.6.0 and 5.6.1. On systems where OpenSSH's sshd is linked against liblzma through systemd, the backdoor lets a remote attacker holding the author's private key bypass authentication and execute code as root. It carries a CVSS base score of 10.0 (Critical) but was discovered before most distributions shipped the affected versions; remediation is to revert to a clean release (5.6.2 or a distro-reverted 5.4.x).",
+    "skill": "cve_lookup",
+    "metadata": { "year": 2024, "cve": "CVE-2024-3094", "severity": "CRITICAL", "cvss": 10.0 }
+  },
+  {
+    "id": "cve-2024-6387-regresshion",
+    "question": "Describe CVE-2024-6387 (\"regreSSHion\"), including the affected component and impact.",
+    "reference_answer": "CVE-2024-6387, nicknamed regreSSHion, is a signal-handler race condition in OpenSSH's server (sshd) on glibc-based Linux. If a client does not authenticate within LoginGraceTime, sshd's SIGALRM handler calls async-signal-unsafe functions, and the race can be exploited for unauthenticated remote code execution as root. It is a regression of an earlier bug (CVE-2006-5051), rated High (CVSS ~8.1), and is fixed in OpenSSH 9.8p1.",
+    "skill": "cve_lookup",
+    "metadata": { "year": 2024, "cve": "CVE-2024-6387", "severity": "HIGH", "cvss": 8.1 }
+  },
+  {
+    "id": "cve-2024-4577-php-cgi",
+    "question": "What kind of vulnerability is CVE-2024-4577 and which configurations are affected?",
+    "reference_answer": "CVE-2024-4577 is an argument-injection vulnerability in PHP when run in CGI mode. A best-fit character-encoding conversion (notably on Windows using certain code pages, e.g. Chinese/Japanese) lets attacker-supplied query-string characters be reinterpreted as command-line arguments to the PHP CGI binary, bypassing an earlier fix (CVE-2012-1823) and enabling remote code execution. It is fixed in PHP 8.3.8, 8.2.20 and 8.1.29.",
+    "skill": "cve_lookup",
+    "metadata": { "year": 2024, "cve": "CVE-2024-4577", "severity": "CRITICAL" }
+  },
+  {
+    "id": "cve-2024-3400-panos-globalprotect",
+    "question": "Explain CVE-2024-3400 in Palo Alto Networks PAN-OS.",
+    "reference_answer": "CVE-2024-3400 is an unauthenticated command-injection vulnerability in the GlobalProtect feature of Palo Alto Networks PAN-OS. A crafted request (via a malicious SESSID cookie value used to create an arbitrary file) lets a remote attacker execute arbitrary code with root privileges on the firewall. It has a CVSS base score of 10.0 (Critical), was exploited as a zero-day, and is fixed in PAN-OS hotfixes such as 10.2.9-h1, 11.0.4-h1 and 11.1.2-h3.",
+    "skill": "cve_lookup",
+    "metadata": { "year": 2024, "cve": "CVE-2024-3400", "severity": "CRITICAL", "cvss": 10.0 }
+  },
+  {
+    "id": "cve-2024-21762-fortios-sslvpn",
+    "question": "What is CVE-2024-21762 in Fortinet FortiOS?",
+    "reference_answer": "CVE-2024-21762 is an out-of-bounds write vulnerability in the SSL VPN component of Fortinet FortiOS. An unauthenticated remote attacker can execute arbitrary code or commands by sending specially crafted HTTP requests to an exposed SSL VPN interface. It is rated Critical (CVSS ~9.8), has been exploited in the wild, and affects multiple 6.0-7.4 branches with fixes in later builds (e.g. 7.4.3, 7.2.7, 7.0.14).",
+    "skill": "cve_lookup",
+    "metadata": { "year": 2024, "cve": "CVE-2024-21762", "severity": "CRITICAL", "cvss": 9.8 }
+  },
+  {
+    "id": "cve-2024-1086-nftables",
+    "question": "What is CVE-2024-1086 and what does exploiting it achieve?",
+    "reference_answer": "CVE-2024-1086 is a use-after-free vulnerability in the Linux kernel's netfilter nf_tables subsystem: nft_verdict_init() allows positive values as a drop error, so nf_hook_slow() can trigger a double free / use-after-free. A local unprivileged user can exploit it for local privilege escalation to root. It affects kernels roughly 3.15 through 6.7 and is fixed in 6.7.3 (and backports such as 6.6.15).",
+    "skill": "cve_lookup",
+    "metadata": { "year": 2024, "cve": "CVE-2024-1086", "severity": "HIGH", "weakness": "CWE-416" }
+  },
+  {
+    "id": "cve-2024-21413-outlook-monikerlink",
+    "question": "Summarize CVE-2024-21413 (the Microsoft Outlook \"MonikerLink\" bug).",
+    "reference_answer": "CVE-2024-21413 is a remote code execution vulnerability in Microsoft Outlook caused by unsafe handling of moniker links (file:// hyperlinks). A crafted link in an email can bypass Outlook's Protected View, leak the user's NTLM credentials, and lead to remote code execution. Microsoft rates it Critical (CVSS 9.8); it is addressed in the February 2024 Patch Tuesday updates.",
+    "skill": "cve_lookup",
+    "metadata": { "year": 2024, "cve": "CVE-2024-21413", "severity": "CRITICAL", "cvss": 9.8 }
+  },
+  {
+    "id": "cve-2024-23897-jenkins-cli",
+    "question": "What is CVE-2024-23897 in Jenkins?",
+    "reference_answer": "CVE-2024-23897 is an arbitrary file read vulnerability in the built-in Jenkins CLI. Its args4j command parser expands an '@' character in an argument into the contents of a file on the controller, so an attacker with limited (even unauthenticated Overall/Read) CLI access can read arbitrary files, including secrets that can lead to remote code execution. It is fixed in Jenkins 2.442 and LTS 2.426.3.",
+    "skill": "cve_lookup",
+    "metadata": { "year": 2024, "cve": "CVE-2024-23897", "severity": "CRITICAL" }
+  },
+  {
+    "id": "cve-2024-27198-teamcity",
+    "question": "Describe CVE-2024-27198 in JetBrains TeamCity.",
+    "reference_answer": "CVE-2024-27198 is an authentication-bypass vulnerability in JetBrains TeamCity On-Premises. By requesting a normally authenticated endpoint through an alternate path (a crafted URL with a bogus segment plus a ';.jsp' trick and jsp parameter), an unauthenticated remote attacker can reach admin functionality - creating admin users or tokens and achieving full server takeover / RCE. It is rated Critical (CVSS 9.8) and fixed in TeamCity 2023.11.4.",
+    "skill": "cve_lookup",
+    "metadata": { "year": 2024, "cve": "CVE-2024-27198", "severity": "CRITICAL", "cvss": 9.8, "weakness": "CWE-288" }
+  },
+  {
+    "id": "cve-2025-0282-ivanti-connect-secure",
+    "question": "What is CVE-2025-0282 and which products does it affect?",
+    "reference_answer": "CVE-2025-0282 is a stack-based buffer overflow in Ivanti Connect Secure (before 22.7R2.5), Ivanti Policy Secure (before 22.7R1.2) and Ivanti Neurons for ZTA gateways (before 22.7R2.3). An unauthenticated remote attacker can send crafted traffic to trigger the overflow and execute arbitrary code. It is rated Critical (CVSS ~9.0) and was exploited as a zero-day; remediation is to upgrade to the fixed builds and run Ivanti's Integrity Checker Tool.",
+    "skill": "cve_lookup",
+    "metadata": { "year": 2025, "cve": "CVE-2025-0282", "severity": "CRITICAL", "cvss": 9.0, "weakness": "CWE-121" }
+  },
+  {
+    "id": "cve-2025-21298-windows-ole",
+    "question": "Explain CVE-2025-21298 (the Windows OLE zero-click vulnerability).",
+    "reference_answer": "CVE-2025-21298 is a critical remote code execution vulnerability in Windows OLE (a use-after-free in ole32.dll when parsing malformed RTF documents with embedded OLE objects). It can be triggered zero-click by previewing a specially crafted RTF email in Outlook, running arbitrary code in the victim's context. Microsoft rates it Critical (CVSS 9.8); it is fixed in the January 2025 updates, with a workaround of reading email as plain text.",
+    "skill": "cve_lookup",
+    "metadata": { "year": 2025, "cve": "CVE-2025-21298", "severity": "CRITICAL", "cvss": 9.8, "weakness": "CWE-416" }
+  },
+  {
+    "id": "cve-2025-23006-sonicwall-sma",
+    "question": "What is CVE-2025-23006 in SonicWall SMA appliances?",
+    "reference_answer": "CVE-2025-23006 is a critical vulnerability in SonicWall Secure Mobile Access (SMA) 1000 series appliances: a deserialization of untrusted data flaw that lets an unauthenticated remote attacker (with access to the internal/appliance management interface) execute arbitrary OS commands. It is rated Critical (CVSS ~9.8), was reported as exploited in the wild, and is fixed in firmware 12.4.3-02854 and later.",
+    "skill": "cve_lookup",
+    "metadata": { "year": 2025, "cve": "CVE-2025-23006", "severity": "CRITICAL", "cvss": 9.8, "weakness": "CWE-502" }
+  },
+  {
+    "id": "concept-use-after-free",
+    "question": "What is a use-after-free (CWE-416) vulnerability and why is it dangerous?",
+    "reference_answer": "A use-after-free (CWE-416) occurs when a program continues to use a pointer to memory after it has been freed. The freed region may be reallocated for other data, so subsequent reads/writes can corrupt memory, leak data, or let an attacker control freed-then-reused objects (e.g. function pointers/vtables), often leading to code execution or privilege escalation. It is common in C/C++ systems code such as kernels and browsers.",
+    "skill": "concept",
+    "metadata": { "topic": "weakness", "weakness": "CWE-416" }
+  },
+  {
+    "id": "concept-cvss-base-score",
+    "question": "What does a CVSS base score represent for a CVE?",
+    "reference_answer": "A CVSS base score (0.0-10.0) summarizes the intrinsic severity of a vulnerability from its exploitability metrics (attack vector, complexity, privileges required, user interaction) and impact metrics (confidentiality, integrity, availability). It is qualitatively banded as None, Low (0.1-3.9), Medium (4.0-6.9), High (7.0-8.9) and Critical (9.0-10.0), and excludes time- and environment-specific factors captured by the temporal and environmental scores.",
+    "skill": "concept",
+    "metadata": { "topic": "scoring" }
+  }
+]
