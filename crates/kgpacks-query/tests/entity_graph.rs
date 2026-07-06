@@ -241,3 +241,58 @@ fn limit_caps_the_returned_nodes() {
     // Seed is always first.
     assert_eq!(result.nodes[0].id, "hub");
 }
+
+#[test]
+fn cooccurrence_edge_weight_counts_shared_articles() {
+    // e1 and e2 co-occur in TWO articles → the co-occurrence edge weight is 2.
+    let db = Database::in_memory().unwrap();
+    {
+        let conn = db.connect().unwrap();
+        schema(&conn);
+        entity(&conn, "e1", "Alpha", "person");
+        entity(&conn, "e2", "Bravo", "person");
+        article_with(&conn, "A1", &["e1", "e2"]);
+        article_with(&conn, "A2", &["e1", "e2"]);
+    }
+    let conn = db.connect().unwrap();
+    let result = entity_graph(&conn, &EntityGraphOptions::new("e1")).unwrap();
+    assert_eq!(result.total_edges, 1);
+    assert_eq!(result.edges[0].relation.as_deref(), Some("co_occurs"));
+    assert_eq!(result.edges[0].weight, 2);
+    // Each entity is in both articles.
+    assert!(result.nodes.iter().all(|n| n.articles_count == 2));
+}
+
+#[test]
+fn relation_mode_depth_2_traverses_two_hops() {
+    // Explicit relation chain e1 -> e2 -> e3; auto mode picks relation traversal.
+    let db = Database::in_memory().unwrap();
+    {
+        let conn = db.connect().unwrap();
+        schema(&conn);
+        entity(&conn, "e1", "Alpha", "person");
+        entity(&conn, "e2", "Bravo", "person");
+        entity(&conn, "e3", "Charlie", "person");
+        relation(&conn, "e1", "e2", "knows");
+        relation(&conn, "e2", "e3", "uses");
+    }
+    let conn = db.connect().unwrap();
+    let mut options = EntityGraphOptions::new("e1");
+    options.depth = Some(2);
+    let result = entity_graph(&conn, &options).unwrap();
+
+    assert_eq!(result.mode, ResolvedEntityGraphMode::Relation);
+    let ids: Vec<&str> = result.nodes.iter().map(|n| n.id.as_str()).collect();
+    assert_eq!(ids, vec!["e1", "e2", "e3"]);
+    assert_eq!(result.nodes[2].depth, 2);
+    // Both directed relation edges among the node set, each weight 1.
+    assert_eq!(result.total_edges, 2);
+    assert!(result.edges.iter().all(|e| e.weight == 1));
+    let mut labels: Vec<&str> = result
+        .edges
+        .iter()
+        .filter_map(|e| e.relation.as_deref())
+        .collect();
+    labels.sort_unstable();
+    assert_eq!(labels, vec!["knows", "uses"]);
+}
