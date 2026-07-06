@@ -11,19 +11,25 @@
 //! Copilot transport (built with the `copilot` feature), while tests inject a
 //! mock via [`run_with_transport`], so the end-to-end flow is proven offline.
 //! The `demo` subcommand (M1) is retained as a cheap smoke test.
+//!
+//! The `build` command (WS6) materializes a CVE knowledge pack from a JSON
+//! corpus via [`kgpacks_packs::build_cve_pack`], with checkpoint/resume and a
+//! pipelined embed-then-load; see [`cmd_build`] and the `--resume`/`--corpus`
+//! flags in [`help_text`].
 
 use std::path::{Path, PathBuf};
 
 use kgpacks_agent::{Agent, CopilotAgent, CopilotAgentOptions, Transport};
 use kgpacks_db::{Database, GraphStore};
-use kgpacks_embeddings::Embedder;
+use kgpacks_embeddings::{Embedder, DEFAULT_DIM};
 use kgpacks_eval::{EvalCase, Harness};
 use kgpacks_ingestion::Ingestor;
 use kgpacks_packs::{
-    decode_public_key, pack_release_filename, pack_release_signature_filename, plan_release,
-    signature_plan, trusted_release_public_key, validate_signature_flags,
-    verify_pack_index_signature, PackIndexSignature, PackManifest, ProvenanceOverrides,
-    SignatureInputs, SignaturePlan, LATEST_POINTER_TAG,
+    build_cve_pack, decode_public_key, pack_release_filename, pack_release_signature_filename,
+    plan_release, signature_plan, trusted_release_public_key, validate_signature_flags,
+    verify_pack_index_signature, BuildParams, FixtureCorpus, PackIndexSignature, PackManifest,
+    PipelineOptions, ProvenanceOverrides, SignatureInputs, SignaturePlan, DEFAULT_BATCH_SIZE,
+    DEFAULT_QUEUE_CAPACITY, LATEST_POINTER_TAG,
 };
 use kgpacks_query::{
     retrieve_and_synthesize, PackRetriever, RetrieveMode, RetrieveOptions, Retriever,
@@ -83,6 +89,7 @@ fn dispatch(
         "help" | "--help" | "-h" => Ok(help_text()),
         "version" | "--version" | "-V" => Ok(env!("CARGO_PKG_VERSION").to_string()),
         "demo" => Ok(demo()),
+        "build" => cmd_build(&packs_dir, &rest[1..]),
         "query" => cmd_query(&packs_dir, &rest[1..]),
         "status" => cmd_status(&packs_dir),
         "pack" => cmd_pack(&packs_dir, &rest[1..]),
@@ -94,6 +101,9 @@ fn dispatch(
 fn help_text() -> String {
     [
         "kgpacks <command> [--packs-dir <dir>]",
+        "  build <pack> --corpus <file.json> [--out <dir>] [--batch <n>] [--limit <n>]",
+        "        [--year <y>] [--with-entity-relations] [--queue <n>] [--pack-version <semver>]",
+        "        [--resume]                                          resumable, pipelined CVE pack build",
         "  query <pack> <question> [-k <n>] [--mode vector|hybrid]   ranked retrieval as JSON",
         "  ask   <pack> <question> [-k <n>] [--mode vector|hybrid] [--multidoc]   graph-RAG answer as JSON",
         "  status                                                    installed packs summary as JSON",
@@ -104,6 +114,10 @@ fn help_text() -> String {
         "  pack pull <pack> [--require-signature] [--no-verify] [--trusted-key <b64>]   verify + pull a signed release index",
         "  demo                                                      smoke-test the pipeline",
         "  version                                                   print the version",
+        "",
+        "build resumes from a <pack>/graph.lbug.build-checkpoint.json sidecar when --resume is",
+        "given and the build parameters are unchanged; otherwise it starts a clean build. A",
+        "completed pack (with a manifest) is never overwritten — remove it to rebuild.",
         "",
         "Packs directory resolution (highest precedence first):",
         "  --packs-dir <dir>        explicit override (this flag)",
@@ -239,6 +253,232 @@ fn options_for(args: &QueryArgs) -> RetrieveOptions {
         mode: args.mode,
         weights: None,
     }
+}
+
+/// Parsed arguments for the `build` command.
+struct BuildArgs {
+    pack: String,
+    corpus: PathBuf,
+    out: Option<PathBuf>,
+    batch: usize,
+    limit: Option<usize>,
+    year: Option<i64>,
+    with_entity_relations: bool,
+    resume: bool,
+    queue: usize,
+    pack_version: String,
+}
+
+fn parse_build_args(args: &[String]) -> Result<BuildArgs, String> {
+    let mut positionals: Vec<String> = Vec::new();
+    let mut corpus: Option<PathBuf> = None;
+    let mut out: Option<PathBuf> = None;
+    let mut batch = DEFAULT_BATCH_SIZE;
+    let mut limit: Option<usize> = None;
+    let mut year: Option<i64> = None;
+    let mut with_entity_relations = false;
+    let mut resume = false;
+    let mut queue = DEFAULT_QUEUE_CAPACITY;
+    let mut pack_version = "1.0.0".to_string();
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--corpus" => {
+                corpus = Some(PathBuf::from(take_value(args, i, "--corpus")?));
+                i += 2;
+            }
+            "--out" => {
+                out = Some(PathBuf::from(take_value(args, i, "--out")?));
+                i += 2;
+            }
+            "--batch" => {
+                batch = parse_positive(take_value(args, i, "--batch")?, "--batch")?;
+                i += 2;
+            }
+            "--limit" => {
+                limit = Some(parse_positive(take_value(args, i, "--limit")?, "--limit")?);
+                i += 2;
+            }
+            "--year" => {
+                let raw = take_value(args, i, "--year")?;
+                let value = raw
+                    .parse::<i64>()
+                    .map_err(|_| format!("--year must be an integer, got {raw}"))?;
+                if !(1999..=2999).contains(&value) {
+                    return Err(format!("--year must be in 1999..=2999, got {value}"));
+                }
+                year = Some(value);
+                i += 2;
+            }
+            "--queue" => {
+                // 0 is valid (rendezvous handoff between embed and load).
+                let raw = take_value(args, i, "--queue")?;
+                queue = raw
+                    .parse::<usize>()
+                    .map_err(|_| format!("--queue must be a non-negative integer, got {raw}"))?;
+                i += 2;
+            }
+            "--pack-version" => {
+                pack_version = take_value(args, i, "--pack-version")?.to_string();
+                i += 2;
+            }
+            "--with-entity-relations" => {
+                with_entity_relations = true;
+                i += 1;
+            }
+            "--resume" => {
+                resume = true;
+                i += 1;
+            }
+            // Reject unknown flags and stray extra positionals rather than
+            // silently dropping them (a typo'd flag must never "succeed").
+            other if other.starts_with('-') => {
+                return Err(format!("unknown flag for build: {other}"));
+            }
+            other => {
+                if !positionals.is_empty() {
+                    return Err(format!("unexpected argument: {other}"));
+                }
+                positionals.push(other.to_string());
+                i += 1;
+            }
+        }
+    }
+
+    let pack = positionals
+        .into_iter()
+        .next()
+        .ok_or_else(|| "missing <pack> argument".to_string())?;
+    let corpus = corpus.ok_or_else(|| "missing required --corpus <file.json>".to_string())?;
+    Ok(BuildArgs {
+        pack,
+        corpus,
+        out,
+        batch,
+        limit,
+        year,
+        with_entity_relations,
+        resume,
+        queue,
+        pack_version,
+    })
+}
+
+fn take_value<'a>(args: &'a [String], i: usize, flag: &str) -> Result<&'a str, String> {
+    match args.get(i + 1).map(String::as_str) {
+        // Reject a following flag being swallowed as this flag's value; every
+        // build value is a path/int/semver, so none legitimately starts with
+        // `--` (this turns `--out --corpus x` into an error, not a pack named
+        // `--corpus`).
+        Some(value) if !value.starts_with("--") => Ok(value),
+        _ => Err(format!("missing value for {flag}")),
+    }
+}
+
+fn parse_positive(raw: &str, flag: &str) -> Result<usize, String> {
+    raw.parse::<usize>()
+        .ok()
+        .filter(|&n| n >= 1)
+        .ok_or_else(|| format!("{flag} must be a positive integer, got {raw}"))
+}
+
+/// Usage text for the `build` subcommand (`kgpacks build --help`).
+fn build_help_text() -> String {
+    [
+        "kgpacks build <pack> --corpus <file.json> [options]",
+        "",
+        "Resumable, pipelined CVE pack build. Loads a JSON corpus and materializes",
+        "a pack with checkpoint/resume and a pipelined embed-then-load.",
+        "",
+        "Options:",
+        "  --corpus <file.json>   CVE corpus JSON array (required)",
+        "  --out <dir>            output pack directory (default: <packs-dir>/<pack>)",
+        "  --batch <n>            records per batch/checkpoint (default: 64)",
+        "  --limit <n>            cap on corpus records considered (a prefix)",
+        "  --year <y>             load only records whose published_year == y (1999..=2999)",
+        "  --with-entity-relations  materialize ENTITY_RELATION edges",
+        "  --queue <n>            embedded batches buffered between embed and load (default: 2)",
+        "  --pack-version <ver>   manifest version (default: 1.0.0)",
+        "  --resume               resume from a matching checkpoint, else clean restart",
+    ]
+    .join("\n")
+}
+
+/// `build <pack> --corpus <file.json>` — resumable, pipelined CVE pack build.
+///
+/// Loads a CVE corpus from a JSON file (the seam the external #25 fetch fills),
+/// then materializes the pack with checkpoint/resume and a pipelined
+/// embed-then-load. Prints a JSON build report.
+fn cmd_build(packs_dir: &Path, args: &[String]) -> Result<String, String> {
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        return Ok(build_help_text());
+    }
+    let parsed = parse_build_args(args)?;
+    if parsed.pack.is_empty()
+        || parsed.pack.contains('/')
+        || parsed.pack.contains('\\')
+        || parsed.pack == ".."
+    {
+        return Err(format!("invalid pack name: {}", parsed.pack));
+    }
+
+    let pack_dir = parsed
+        .out
+        .clone()
+        .unwrap_or_else(|| packs_dir.join(&parsed.pack));
+
+    // Read the corpus once: parse it, and fingerprint its bytes so the build's
+    // params hash binds the corpus *content* (a mid-resume edit then triggers a
+    // clean restart instead of mixing old and new records).
+    let raw = std::fs::read_to_string(&parsed.corpus)
+        .map_err(|e| format!("cannot read corpus at {}: {e}", parsed.corpus.display()))?;
+    let corpus = FixtureCorpus::from_json_str(&raw).map_err(|e| e.to_string())?;
+    let src = format!(
+        "{}#sha256:{}",
+        parsed.corpus.display(),
+        kgpacks_packs::content_fingerprint(raw.as_bytes())
+    );
+
+    // A single deterministic embedder backs the build; its model identity is
+    // recorded in the params hash so a future model swap forces a clean rebuild.
+    let embedder = Embedder::new(DEFAULT_DIM);
+    let params = BuildParams {
+        src,
+        year: parsed.year,
+        limit: parsed.limit,
+        batch: parsed.batch,
+        model: embedder.model_name().to_string(),
+        with_entity_relations: parsed.with_entity_relations,
+    };
+    let options = PipelineOptions {
+        resume: parsed.resume,
+        queue_capacity: parsed.queue,
+        embedding_dim: DEFAULT_DIM,
+        interrupt_after_batches: None,
+    };
+
+    let manifest = PackManifest::new(parsed.pack.clone(), parsed.pack_version.clone());
+    let report = build_cve_pack(&pack_dir, &manifest, &params, &corpus, &embedder, &options)
+        .map_err(|e| e.to_string())?;
+
+    let json = serde_json::json!({
+        "command": "build",
+        "pack": parsed.pack,
+        "path": report.path.display().to_string(),
+        "packVersion": parsed.pack_version,
+        "paramsHash": report.params_hash,
+        "resumed": report.resumed,
+        "resumedFromBatch": report.resumed_from_batch,
+        "interrupted": report.interrupted,
+        "batchesCommitted": report.batches_committed,
+        "counts": {
+            "articles": report.counts.articles,
+            "entities": report.counts.entities,
+            "relationships": report.counts.relationships,
+        },
+    });
+    serde_json::to_string_pretty(&json).map_err(|e| e.to_string())
 }
 
 /// `query <pack> <question>` — ranked retrieval over a pack's graph, as JSON.

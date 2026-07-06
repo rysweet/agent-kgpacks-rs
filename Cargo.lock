@@ -1012,6 +1012,7 @@ dependencies = [
  "ed25519-dalek",
  "getrandom 0.2.17",
  "kgpacks-db",
+ "kgpacks-embeddings",
  "regex",
  "serde_json",
  "tempfile",

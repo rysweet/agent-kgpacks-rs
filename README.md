@@ -139,6 +139,14 @@ Run the CLI:
 cargo run --bin kgpacks -- demo
 # ingested 1 chunk(s); pack=demo@0.1.0; score=1
 
+# Build a CVE pack from a JSON corpus (resumable + pipelined; WS6):
+cargo run --bin kgpacks -- build cve --corpus ./cve-corpus.json --out ./packs/cve \
+  --batch 500 --with-entity-relations
+# If interrupted, re-run the SAME command with --resume to continue from the
+# last committed batch instead of rebuilding from scratch:
+cargo run --bin kgpacks -- build cve --corpus ./cve-corpus.json --out ./packs/cve \
+  --batch 500 --with-entity-relations --resume
+
 # Ranked retrieval over a built pack, as JSON (uses the default packs dir):
 cargo run --bin kgpacks -- query rust-expert "what is ownership?" -k 5
 
@@ -270,6 +278,65 @@ O(N²) comma two-pattern `MATCH (a {..}), (b {..})`. These guards run in CI as
 part of `cargo test --workspace` (`kgpacks-packs/tests/multipart_release.rs`,
 `kgpacks-packs/tests/linear_scaling_guard.rs`, and
 `kgpacks-ingestion/tests/linear_scaling_guard.rs`).
+
+## Resumable, pipelined CVE pack build (WS6)
+
+For large CVE packs, `kgpacks-packs` provides a build path that is both
+**resumable** and **pipelined** ([`build_cve_pack`](crates/kgpacks-packs/src/cve_build.rs)),
+alongside the one-shot [`build_pack`](crates/kgpacks-packs/src/pack.rs):
+
+- **Checkpoint / resume.** After every committed batch the builder writes a
+  sidecar next to the graph store — `graph.lbug.build-checkpoint.json` — recording
+  the last committed batch, the corpus offset, running counts and a stable
+  `params_hash` (a SHA-256 over the output-affecting inputs `src`, `year`,
+  `limit`, `batch`, `model`, `with_entity_relations`, independent of key order).
+  Re-running with resume enabled continues from the checkpoint (reopening the
+  store, skipping schema creation, rebuilding its de-dup set from the store, and
+  loading only the remaining records). If any parameter changed — so the recorded
+  `params_hash` no longer matches — the build restarts cleanly instead. The
+  sidecar is removed on a clean finish, so a completed pack carries no resume
+  state.
+- **Pipelined `embed || load`.** Embedding (CPU-bound, parallelizable) runs on a
+  worker thread while the database load/index (serial, single-writer) runs on the
+  caller's thread, connected by a **bounded** channel that overlaps the two
+  stages while capping how many embedded batches are held in memory.
+
+The corpus is consumed only through the
+[`CorpusSource`](crates/kgpacks-packs/src/corpus.rs) seam, so the external
+CVE-corpus fetch (issue #25) can plug in a live source without changing the
+builder. Until then, `FixtureCorpus` loads a corpus from a JSON array of
+records (`id`, `description`, optional `published_year`, `entities`, `relations`).
+
+### CLI
+
+```bash
+# Fresh build (fails if the pack already exists, so a finished pack is never
+# clobbered):
+kgpacks build cve --corpus ./cve-corpus.json --out ./packs/cve --batch 500
+
+# Resume an interrupted build from its checkpoint (same parameters), or start
+# clean if the parameters changed:
+kgpacks build cve --corpus ./cve-corpus.json --out ./packs/cve --batch 500 --resume
+```
+
+`build <pack>` flags:
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--corpus <file.json>` | *(required)* | CVE corpus JSON (the #25 seam). |
+| `--out <dir>` | `<packs-dir>/<pack>` | Output pack directory. |
+| `--batch <n>` | `64` | Records loaded (and checkpointed) per batch. |
+| `--limit <n>` | *(all)* | Cap on the number of corpus records considered (a prefix). |
+| `--year <y>` | *(none)* | Load only records whose `published_year` equals `y`. |
+| `--with-entity-relations` | off | Materialize `ENTITY_RELATION` edges. |
+| `--queue <n>` | `2` | Bound on embedded batches buffered between embed and load. |
+| `--pack-version <semver>` | `1.0.0` | Version written to the pack manifest. |
+| `--resume` | off | Resume from a matching checkpoint (else clean restart). |
+
+The command prints a JSON report (`paramsHash`, `resumed`, `resumedFromBatch`,
+`batchesCommitted`, `counts`). The checkpoint file lives at
+`<out>/graph.lbug.build-checkpoint.json` while a build is in progress and is
+removed on a clean finish.
 
 ## Ingestion pipeline (M3)
 

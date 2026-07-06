@@ -9,6 +9,7 @@ description = "Knowledge-pack manifests, schema and build/load over LadybugDB fo
 
 [dependencies]
 kgpacks-db.workspace = true
+kgpacks-embeddings.workspace = true
 serde_json.workspace = true
 regex.workspace = true
 thiserror.workspace = true

@@ -22,6 +22,14 @@ pub enum PacksError {
     #[error("pack not found: {0}")]
     PackNotFound(String),
 
+    /// A build checkpoint sidecar could not be read, written or parsed.
+    #[error("build checkpoint error: {0}")]
+    Checkpoint(String),
+
+    /// The CVE corpus source could not be read or parsed.
+    #[error("corpus error: {0}")]
+    Corpus(String),
+
     /// An underlying graph-store (`kgpacks-db`) error.
     #[error(transparent)]
     Db(#[from] kgpacks_db::Error),
