@@ -21,6 +21,31 @@ use crate::extraction::{ExtractionResult, Extractor};
 use crate::orchestrator::ProcessOutcome;
 use crate::util::now_ms;
 
+/// Cypher that creates one `IN_CATEGORY` edge between an existing `Article` and
+/// `Category`, each located by its **primary key** in its own single `MATCH`
+/// (never the O(N²) comma two-pattern `MATCH (a {..}), (c {..})`).
+pub const CREATE_IN_CATEGORY_CYPHER: &str = "MATCH (a:Article {title: $title}) \
+     MATCH (c:Category {name: $category}) \
+     CREATE (a)-[:IN_CATEGORY]->(c)";
+
+/// Cypher that creates one `HAS_ENTITY` edge between an existing `Article` and
+/// `Entity`, each PK-located by its own single `MATCH`.
+pub const CREATE_HAS_ENTITY_CYPHER: &str = "MATCH (a:Article {title: $title}) \
+     MATCH (e:Entity {entity_id: $entity_id}) \
+     CREATE (a)-[:HAS_ENTITY]->(e)";
+
+/// Cypher that creates one `HAS_FACT` edge between an existing `Article` and
+/// `Fact`, each PK-located by its own single `MATCH`.
+pub const CREATE_HAS_FACT_CYPHER: &str = "MATCH (a:Article {title: $title}) \
+     MATCH (f:Fact {fact_id: $fact_id}) \
+     CREATE (a)-[:HAS_FACT]->(f)";
+
+/// Cypher that creates one `ENTITY_RELATION` edge between two existing
+/// `Entity` nodes, each PK-located by its own single `MATCH`.
+pub const CREATE_ENTITY_RELATION_CYPHER: &str = "MATCH (e1:Entity {entity_id: $source_id}) \
+     MATCH (e2:Entity {entity_id: $target_id}) \
+     CREATE (e1)-[:ENTITY_RELATION {relation: $relation, context: $context}]->(e2)";
+
 /// Processes a single article end to end into the working store.
 ///
 /// Holds borrowed collaborators (connection, content source, embedder, optional
@@ -298,8 +323,7 @@ impl<'a, 'db> ArticleProcessor<'a, 'db> {
                 vec![("category", Value::String(cat.clone()))],
             )?;
             self.conn.run_params(
-                "MATCH (a:Article {title: $title}), (c:Category {name: $category}) \
-                 CREATE (a)-[:IN_CATEGORY]->(c)",
+                CREATE_IN_CATEGORY_CYPHER,
                 vec![
                     ("title", Value::String(article.title.clone())),
                     ("category", Value::String(cat.clone())),
@@ -343,8 +367,7 @@ impl<'a, 'db> ArticleProcessor<'a, 'db> {
                 ],
             )?;
             self.conn.run_params(
-                "MATCH (a:Article {title: $title}), (e:Entity {entity_id: $entity_id}) \
-                 CREATE (a)-[:HAS_ENTITY]->(e)",
+                CREATE_HAS_ENTITY_CYPHER,
                 vec![
                     ("title", Value::String(article.title.clone())),
                     ("entity_id", Value::String(entity_id)),
@@ -362,8 +385,7 @@ impl<'a, 'db> ArticleProcessor<'a, 'db> {
                 ],
             )?;
             self.conn.run_params(
-                "MATCH (a:Article {title: $title}), (f:Fact {fact_id: $fact_id}) \
-                 CREATE (a)-[:HAS_FACT]->(f)",
+                CREATE_HAS_FACT_CYPHER,
                 vec![
                     ("title", Value::String(article.title.clone())),
                     ("fact_id", Value::String(fact_id)),

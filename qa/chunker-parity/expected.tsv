@@ -1,0 +1,18 @@
+Alpha#0#0	The quick brown fox 
+Alpha#0#1	 fox jumps over the 
+Alpha#0#2	 the lazy dog and th
+Alpha#0#3	nd then keeps runnin
+Alpha#0#4	unning.
+Alpha#1#0	short
+Beta#0#0	абвгдеёжзийклмнопрст
+Beta#0#1	опрстуфхцчшщ
+Gamma#0#0	leading bom is trimm
+Gamma#0#1	trimmed away here
+Gamma#1#0	kept nel
+Delta#0#0	aa  bb  cc  dd  ee  
+Delta#0#1	 ee  ff  gg  hh  ii
+Epsilon#0#0	alpha\tbeta gamma del
+Epsilon#0#1	a delta epsilon zeta
+Zeta#0#0	path C:\\dir keeps ba
+Zeta#0#1	ps backslashes intac
+Zeta#0#2	intact ok
