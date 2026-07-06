@@ -141,6 +141,11 @@ cargo run --bin kgpacks -- --packs-dir ./packs query rust-expert "what is owners
 # Graph-RAG: retrieve, then synthesize a grounded answer (needs the `copilot`
 # feature to reach the real Copilot backend):
 cargo run --bin kgpacks --features copilot -- --packs-dir ./packs ask rust-expert "what is ownership?"
+
+# Verify a signed release index, then pull it (WS7). Fails closed on a
+# tampered/untrusted signature; `--require-signature` rejects an unsigned index;
+# `--no-verify` skips the check:
+cargo run --bin kgpacks -- --packs-dir ./packs pack pull rust-expert --require-signature
 ```
 
 CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the four default gates
@@ -374,6 +379,54 @@ behind the non-default `copilot` feature (compiled + linted in a dedicated CI
 step) so the default gates stay lean and hermetic; the retrieval ENHANCEMENTS
 layer, the MCP/backend HTTP surfaces, and the `parity/` harness remain
 follow-ups beyond this core flow.
+
+## Release-index signing (WS7)
+
+Beyond the sha256 **integrity** already carried in the `<name>.pack-release.json`
+release index, WS7 ([#22](https://github.com/rysweet/agent-kgpacks-rs/issues/22))
+adds Ed25519 **authenticity**: the index is signed with a release private key
+(a CI secret, never committed), and `pack pull` verifies that signature before
+trusting the index.
+
+The primitives live in [`kgpacks-packs::signing`](crates/kgpacks-packs/src/signing.rs)
+and are deliberately **format-agnostic** — they sign and verify the *raw
+serialized bytes* of the index and never parse it, so they compose additively
+over the WS3 ([#18](https://github.com/rysweet/agent-kgpacks-rs/issues/18))
+release-index schema whether or not it has landed:
+
+- `SigningKeyPair` — pure-Rust Ed25519 (`ed25519-dalek`) keypair generation
+  (OS-CSPRNG seeded), detached signing over the raw index bytes, and the
+  `<name>.pack-release.json.sig` sidecar (`{algorithm, signature, public_key}`,
+  base64).
+- `verify_pack_index_signature(index_bytes, sig, trusted_pubkey) -> bool` —
+  **verify-before-parse** over the raw bytes; rejects tampered bytes, wrong-length
+  inputs, and signatures from untrusted keys (uses `verify_strict`, never panics).
+- `signature_plan(SignatureInputs{present, valid, require_signature, no_verify})`
+  → `Verify | Fail | Warn | Skip` — the pull-time policy: present+valid ⇒
+  **Verify**; present+invalid ⇒ **Fail** (fail-closed); absent ⇒ **Warn**
+  (integrity-only) unless `--require-signature` ⇒ **Fail**; `--no-verify` ⇒
+  **Skip**. `--require-signature` together with `--no-verify` is a usage error
+  (`validate_signature_flags`).
+
+The **trusted** public key is committed at
+[`crates/kgpacks-packs/keys/pack-release-signing.pub`](crates/kgpacks-packs/keys/pack-release-signing.pub)
+(base64 raw 32 bytes); `pack pull` verifies against it by default, overridable
+with `--trusted-key <base64>` or `KGPACKS_TRUSTED_RELEASE_KEY`. Trust is anchored
+on that committed key — **not** on the `public_key` a sidecar happens to carry.
+
+```bash
+# Verify against the committed trusted key (default), requiring a signature:
+kgpacks --packs-dir ./packs pack pull rust-expert --require-signature
+# Skip verification (integrity-only):
+kgpacks --packs-dir ./packs pack pull rust-expert --no-verify
+```
+
+| Behavior (issue #22)                                   | Rust surface                                          | Test                                                    |
+| ------------------------------------------------------ | ----------------------------------------------------- | ------------------------------------------------------- |
+| Keypair gen + detached sign over raw index bytes       | `signing::SigningKeyPair`                             | `packs/tests/signing.rs`, `signing` unit tests          |
+| `verify_pack_index_signature` (tamper / wrong-key)     | `signing::verify_pack_index_signature`               | `packs/tests/signing.rs`, `signing` unit tests          |
+| Pull-time policy + mutually-exclusive flags            | `signing::{signature_plan, validate_signature_flags}` | `signing` unit tests, `cli/tests/pack_pull.rs`          |
+| `pack pull` verify path (fail-closed)                  | `kgpacks-cli` (`pack pull`)                           | `cli/tests/pack_pull.rs`                                |
 
 ## License
 
