@@ -12,9 +12,13 @@
 //! The registry, tarball installer and version resolution surfaces land in a
 //! later milestone.
 
+pub mod checkpoint;
+pub mod corpus;
+pub mod cve_build;
 mod errors;
 pub mod manifest;
 pub mod pack;
+mod sha256;
 pub mod versioning;
 
 pub use errors::{PacksError, Result};
@@ -31,4 +35,13 @@ pub use versioning::{
 pub use pack::{
     build_pack, load_pack, Article, BuiltPack, Entity, LoadedPack, PackContent,
     GRAPH_STORE_FILENAME, NODE_TABLE_DDL, REL_TABLE_DDL, SCHEMA,
+};
+
+pub use checkpoint::{checkpoint_path_for, BuildCheckpoint, BuildCounts, CHECKPOINT_SUFFIX};
+
+pub use corpus::{CorpusSource, CveEntity, CveRecord, CveRelation, FixtureCorpus};
+
+pub use cve_build::{
+    build_cve_pack, cve_schema_ddl, BuildParams, CveBuildReport, PipelineOptions, CVE_CATEGORY,
+    DEFAULT_BATCH_SIZE, DEFAULT_QUEUE_CAPACITY,
 };

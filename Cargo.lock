@@ -881,6 +881,7 @@ name = "kgpacks-packs"
 version = "0.1.0"
 dependencies = [
  "kgpacks-db",
+ "kgpacks-embeddings",
  "regex",
  "serde_json",
  "tempfile",
