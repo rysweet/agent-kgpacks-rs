@@ -121,6 +121,112 @@ fn argv(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|s| s.to_string()).collect()
 }
 
+/// Build a retrievable `name` pack under `packs_root` (i.e. at
+/// `packs_root/name/graph.lbug`).
+fn build_pack_in(packs_root: &Path, name: &str) {
+    let pack_dir = packs_root.join(name);
+    fs::create_dir_all(&pack_dir).expect("mkdir pack");
+    build_pack_db(&pack_dir.join("graph.lbug"));
+}
+
+/// Save/restore the packs-dir-resolution environment so mutating it inside a
+/// test never leaks to other tests. Only THIS test touches these vars, and the
+/// other e2e test passes an explicit `--packs-dir` (so it ignores the env), so
+/// there is no cross-test interference.
+struct EnvGuard {
+    saved: Vec<(&'static str, Option<String>)>,
+}
+
+impl EnvGuard {
+    fn capture(keys: &[&'static str]) -> Self {
+        let saved = keys
+            .iter()
+            .map(|&k| (k, std::env::var(k).ok()))
+            .collect::<Vec<_>>();
+        Self { saved }
+    }
+
+    fn set(&self, key: &str, value: &Path) {
+        std::env::set_var(key, value);
+    }
+
+    fn remove(&self, key: &str) {
+        std::env::remove_var(key);
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        for (key, value) in &self.saved {
+            match value {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+}
+
+/// End-to-end proof of the WS4 packs-dir precedence: `--packs-dir` flag beats
+/// `KGPACKS_PACKS_DIR`, which beats the XDG default (`$XDG_DATA_HOME/kgpacks`).
+/// Each level's pack lives ONLY in that level's directory, so a successful
+/// `query` proves the resolver picked the right one (and a lower level's pack
+/// being *not found* proves the higher level overrode it).
+#[test]
+fn cli_resolves_packs_dir_by_precedence() {
+    let _guard = EnvGuard::capture(&["KGPACKS_PACKS_DIR", "XDG_DATA_HOME"]);
+    let factory = || -> Box<dyn Transport> { Box::new(CiteFirstChunk) };
+
+    // XDG default layout: $XDG_DATA_HOME/kgpacks holds `xdgpack` only.
+    let xdg = tempdir().expect("xdg tempdir");
+    let xdg_packs = xdg.path().join("kgpacks");
+    build_pack_in(&xdg_packs, "xdgpack");
+
+    // Env-override layout: $KGPACKS_PACKS_DIR holds `envpack` only.
+    let env_dir = tempdir().expect("env tempdir");
+    build_pack_in(env_dir.path(), "envpack");
+
+    // Flag-override layout: `--packs-dir` holds `flagpack` only.
+    let flag_dir = tempdir().expect("flag tempdir");
+    build_pack_in(flag_dir.path(), "flagpack");
+
+    let q = |extra: &[&str]| {
+        let mut parts = extra.to_vec();
+        parts.extend_from_slice(&["what is rust?", "-k", "5"]);
+        run_with_transport(&argv(&parts), &factory)
+    };
+
+    // (1) XDG default: no flag, no env override -> resolves $XDG_DATA_HOME/kgpacks.
+    _guard.set("XDG_DATA_HOME", xdg.path());
+    _guard.remove("KGPACKS_PACKS_DIR");
+    let out = q(&["query", "xdgpack"]).expect("xdg-default query");
+    assert!(out.contains("\"s1\""), "xdg-default query: {out}");
+
+    // (2) Env override beats the XDG default. `envpack` exists only in the env
+    // dir, and the XDG dir (still set) does NOT contain it — so success proves
+    // the env override won.
+    _guard.set("KGPACKS_PACKS_DIR", env_dir.path());
+    let out = q(&["query", "envpack"]).expect("env-override query");
+    assert!(out.contains("\"s1\""), "env-override query: {out}");
+    // Conversely, the XDG-only pack is now unreachable (env dir lacks it).
+    let err = q(&["query", "xdgpack"]).expect_err("env overrides xdg");
+    assert!(
+        err.contains("database not found"),
+        "env overrides xdg: {err}"
+    );
+
+    // (3) The `--packs-dir` flag beats the env override. `flagpack` exists only
+    // under the flag dir; the env dir (still set) does not contain it.
+    let flag = flag_dir.path().to_str().unwrap();
+    let out = q(&["--packs-dir", flag, "query", "flagpack"]).expect("flag-override query");
+    assert!(out.contains("\"s1\""), "flag-override query: {out}");
+    // The env-only pack is unreachable through the flag dir.
+    let err = q(&["--packs-dir", flag, "query", "envpack"]).expect_err("flag overrides env");
+    assert!(
+        err.contains("database not found"),
+        "flag overrides env: {err}"
+    );
+}
+
 #[test]
 fn cli_query_then_ask_runs_the_graph_rag_flow_end_to_end() {
     let tmp = tempdir().expect("tempdir");

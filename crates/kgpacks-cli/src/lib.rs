@@ -32,12 +32,6 @@ const DB_FILENAME: &str = "graph.lbug";
 /// reference CLI's `DEFAULT_K = 5`, distinct from the library's `DEFAULT_K`).
 const CLI_DEFAULT_K: usize = 5;
 
-/// Environment variable naming the directory that holds installed packs.
-const PACKS_DIR_ENV: &str = "KGPACKS_PACKS_DIR";
-
-/// Default packs directory, relative to the working directory.
-const DEFAULT_PACKS_DIR: &str = "packs";
-
 /// A factory for the graph-RAG agent's transport (the `ask` execution seam).
 pub type TransportFactory<'a> = &'a dyn Fn() -> Box<dyn Transport>;
 
@@ -98,6 +92,12 @@ fn help_text() -> String {
         "  pack validate <pack>                                      validate a pack's manifest as JSON",
         "  demo                                                      smoke-test the pipeline",
         "  version                                                   print the version",
+        "",
+        "Packs directory resolution (highest precedence first):",
+        "  --packs-dir <dir>        explicit override (this flag)",
+        "  KGPACKS_PACKS_DIR=<dir>  environment override",
+        "  default                  $XDG_DATA_HOME/kgpacks, else ~/.local/share/kgpacks",
+        "Blank (empty/whitespace-only) overrides are ignored.",
     ]
     .join("\n")
 }
@@ -105,8 +105,11 @@ fn help_text() -> String {
 /// Pull a global `--packs-dir <dir>` flag out of `args` (anywhere in the list),
 /// returning the resolved packs directory and the remaining arguments.
 ///
-/// Resolution precedence mirrors the reference: the flag wins, else the
-/// `KGPACKS_PACKS_DIR` env var, else `./packs`.
+/// The flag is the explicit override; when it is absent (or blank), resolution
+/// falls through to the `KGPACKS_PACKS_DIR` env var and then the XDG default
+/// (`$XDG_DATA_HOME/kgpacks`, else `~/.local/share/kgpacks`). This shared
+/// resolution ([`kgpacks_packs::resolve_packs_dir`]) is the SAME one the MCP
+/// server uses, so a pack installed by one is found by the other.
 fn extract_packs_dir(args: &[String]) -> (PathBuf, Vec<String>) {
     let mut flag: Option<String> = None;
     let mut rest: Vec<String> = Vec::new();
@@ -122,10 +125,7 @@ fn extract_packs_dir(args: &[String]) -> (PathBuf, Vec<String>) {
         rest.push(args[i].clone());
         i += 1;
     }
-    let dir = flag
-        .or_else(|| std::env::var(PACKS_DIR_ENV).ok())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_PACKS_DIR));
+    let dir = kgpacks_packs::resolve_packs_dir(flag.as_deref());
     (dir, rest)
 }
 
@@ -199,10 +199,15 @@ fn parse_query_args(args: &[String]) -> Result<QueryArgs, String> {
 }
 
 /// Resolve the database path for `pack`, confirming it exists.
+///
+/// Ensures the packs directory itself exists first (best-effort) so the default
+/// XDG location is created on first use; a missing pack still surfaces a clear
+/// "database not found" error.
 fn resolve_db_path(packs_dir: &Path, pack: &str) -> Result<PathBuf, String> {
     if pack.is_empty() || pack.contains('/') || pack.contains('\\') || pack == ".." {
         return Err(format!("invalid pack name: {pack}"));
     }
+    kgpacks_packs::ensure_packs_dir(packs_dir);
     let db_path = packs_dir.join(pack).join(DB_FILENAME);
     if !db_path.exists() {
         return Err(format!("database not found at {}", db_path.display()));

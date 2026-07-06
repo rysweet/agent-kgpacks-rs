@@ -18,10 +18,13 @@
 mod errors;
 pub mod manifest;
 pub mod pack;
+pub mod packs_dir;
 pub mod registry;
 pub mod versioning;
 
 pub use errors::{PacksError, Result};
+
+pub use packs_dir::{default_packs_dir, ensure_packs_dir, resolve_packs_dir, PACKS_DIR_ENV};
 
 pub use manifest::{
     load_manifest, load_manifest_from_dir, manifest_path_in, pack_name_re, parse_manifest_str,
