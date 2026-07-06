@@ -376,9 +376,35 @@ backed by `kgpacks-packs::registry::list_packs`. The read-path subset of the
 reference `pack` command group is also ported — `pack list`
 (`[{ name, version, description }]`, sorted by name), `pack info <pack>` (the
 pack's full manifest), and `pack validate <pack>` (`{ valid, name, version }`) —
-over the same `kgpacks-packs` registry/manifest APIs. The write/network `pack`
-subcommands (`install`/`pull`/`remove`) and the ingestion/eval verbs
-(`create`/`update`/`eval`) remain follow-ups (issue #13).
+over the same `kgpacks-packs` registry/manifest APIs. The offline release
+planner is also ported — `pack release-plan <pack> [--tag <t>] [--model <id>]
+[--corpus-commit <sha>] [--corpus-date <date>]` prints the network-free plan
+(`{ name, tag, version, model, provenance, publishTargets, indexFilename }`) for
+publishing a pack. The write/network `pack` subcommands (`install`/`pull`/`remove`),
+the byte-level release packaging + `gh` upload behind `release-plan`, and the
+ingestion/eval verbs (`create`/`update`/`eval`) remain follow-ups (issue #13).
+
+### Versioned release tags + provenance (WS3)
+
+A pack is published to an **immutable dated release tag** `<name>-YYYY.MM[.N]`
+(e.g. `cve-2025.06`) whose SemVer version is derived **unpadded** — the tag's
+zero-padded month becomes a leading-zero-free numeric core, since SemVer 2.0
+forbids leading zeros: `pack_version_from_release_tag("cve-2025.06")` →
+`"2025.6.0"`, `"cve-2025.06.1"` → `"2025.6.1"`. Undated tags (the stable `packs`
+latest-pointer, `cve`, `cve-latest`, the empty string) and out-of-range months
+are rejected. Every dated release also moves the stable `packs` latest-pointer to
+the same assets (`publish_targets("cve-2025.06")` → `["cve-2025.06", "packs"]`),
+so the `pack pull` UX — which defaults to `packs` — always resolves the newest
+version (`latest_release_tag` resolves the highest dated tag by SemVer
+precedence). The pack `manifest.json` build `provenance` block
+(`corpus`/`embedding`/`build`) is mirrored into the `<name>.pack-release.json`
+release index (`kgpacks-packs::release::PackReleaseIndex`), filling gaps from CLI
+overrides and a release-time `build.date`, so the manifest and the release index
+can be cross-checked. This ports `scripts/release-pack.mjs` +
+`packages/packs/src/versioning.ts` `packVersionFromReleaseTag`; the pure, offline
+half (version/provenance/publish-target/latest resolution + the index model) is
+implemented and tested here, while the byte-level multipart `tar.gz` packaging +
+`gh` upload remain follow-ups (issue #13), like the write/network `pull` path.
 
 Each reference module maps to a Rust module proven by a mirroring parity test:
 
@@ -393,6 +419,7 @@ Each reference module maps to a Rust module proven by a mirroring parity test:
 | `cli/src/commands/query.ts` (+ `ask` flow)    | `kgpacks-cli` (`query` / `ask`)              | `cli/tests/e2e.rs`, unit tests       |
 | `cli/src/commands/status.ts` (+ `packs/registry.ts` `listPacks`) | `kgpacks-cli` (`status`) + `kgpacks-packs::registry::list_packs` | `cli/tests/e2e.rs`, `qa/status-parity/` |
 | `cli/src/commands/pack.ts` (read-path: `list`/`info`/`validate`) | `kgpacks-cli` (`pack list`/`info`/`validate`) over `kgpacks-packs::{registry,manifest}` | `cli/tests/e2e.rs`, unit tests, `qa/pack-parity/` |
+| `scripts/release-pack.mjs` + `versioning.ts` `packVersionFromReleaseTag` | `kgpacks-packs::release` + `kgpacks-cli` (`pack release-plan`) | `packs/tests/release.rs`, `packs/tests/versioning.rs`, unit tests, `qa/release-parity/` |
 
 The agent parity suite mirrors the reference's `agent/test/*` structurally
 (valid shapes, fence-stripping, citation derivation, usage accounting,

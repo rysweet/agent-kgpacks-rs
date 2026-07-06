@@ -249,6 +249,17 @@ fn deep_sanitize(value: &Value) -> Value {
     }
 }
 
+/// Validate a manifest `provenance` block, then return a deep-sanitized copy.
+///
+/// Combines [`validate_provenance`] and [`deep_sanitize`] into the single
+/// operation `validate_manifest` performs on a present `provenance` block, so
+/// the release-index builder ([`crate::release`]) can mirror the manifest's
+/// provenance through the exact same gate.
+pub(crate) fn validate_and_sanitize_provenance(value: &Value) -> Result<Value> {
+    validate_provenance(value)?;
+    Ok(deep_sanitize(value))
+}
+
 /// Validate an arbitrary JSON value as a [`PackManifest`].
 ///
 /// Errors with [`PacksError::ManifestValidation`] on any violation. Optional
@@ -301,10 +312,7 @@ pub fn validate_manifest(value: &Value) -> Result<PackManifest> {
 
     let provenance = match object.get("provenance") {
         None | Some(Value::Null) => None,
-        Some(value) => {
-            validate_provenance(value)?;
-            Some(deep_sanitize(value))
-        }
+        Some(value) => Some(validate_and_sanitize_provenance(value)?),
     };
 
     let mut extra = BTreeMap::new();
