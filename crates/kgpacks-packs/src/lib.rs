@@ -8,17 +8,35 @@
 //! * [`pack`] — the LadybugDB-backed pack graph schema plus
 //!   [`build_pack`](pack::build_pack) / [`load_pack`](pack::load_pack), whose
 //!   round-trip over the graph store is the M2 acceptance gate.
+//! * [`release`] — the pack-release model covering both the versioned
+//!   release-tag/version/provenance derivation (`scripts/release-pack.mjs` +
+//!   `packVersionFromReleaseTag`): dated tags `<name>-YYYY.MM[.N]` derived to
+//!   unpadded SemVer, the stable `packs` latest-pointer, and the
+//!   `<name>.pack-release.json` provenance mirror; and the multi-part release
+//!   index (split/accounting) used to publish and re-verify packs larger than
+//!   [`MAX_SINGLE_ARTIFACT_BYTES`](release::MAX_SINGLE_ARTIFACT_BYTES).
+//! * [`sha256`] — a self-contained SHA-256 (no external crypto dependency)
+//!   backing the release index's per-part and overall content hashes.
+//! * [`registry`] — read-path queries over an install root
+//!   ([`list_packs`](registry::list_packs)), backing the CLI `status` command
+//!   (`packages/packs/src/registry.ts`).
 //!
-//! The registry, tarball installer and version resolution surfaces land in a
-//! later milestone.
+//! The tarball installer and byte-level release packaging land in a later
+//! milestone.
 
 mod errors;
 pub mod manifest;
 pub mod pack;
+pub mod packs_dir;
+pub mod registry;
+pub mod release;
+pub mod sha256;
 pub mod signing;
 pub mod versioning;
 
 pub use errors::{PacksError, Result};
+
+pub use packs_dir::{ensure_packs_dir, resolve_packs_dir, PACKS_DIR_ENV};
 
 pub use manifest::{
     load_manifest, load_manifest_from_dir, manifest_path_in, pack_name_re, parse_manifest_str,
@@ -33,10 +51,28 @@ pub use signing::{
 };
 
 pub use versioning::{
-    compare_versions, is_valid_semver, latest_version, parse_version, sort_versions, ParsedVersion,
+    compare_versions, is_valid_semver, latest_version, pack_version_from_release_tag,
+    parse_version, sort_versions, ParsedVersion,
+};
+
+pub use release::{
+    build_release_index, build_release_provenance, iso8601_utc_from_unix, latest_release_tag,
+    now_iso8601_utc, pack_release_filename, plan_release, publish_targets, resolve_model,
+    resolve_release_version, PackReleaseIndex, ProvenanceOverrides, ReleasePart, ReleasePlan,
+    LATEST_POINTER_TAG, RELEASE_INDEX_FORMAT,
 };
 
 pub use pack::{
-    build_pack, load_pack, Article, BuiltPack, Entity, LoadedPack, PackContent,
-    GRAPH_STORE_FILENAME, NODE_TABLE_DDL, REL_TABLE_DDL, SCHEMA,
+    build_pack, load_pack, plan_load_statements, Article, BuiltPack, Entity, LoadedPack,
+    PackContent, PlannedStatement, CREATE_HAS_ENTITY_CYPHER, GRAPH_STORE_FILENAME, NODE_TABLE_DDL,
+    REL_TABLE_DDL, SCHEMA,
 };
+
+pub use release::{
+    part_accounting, plan_multipart_release, requires_multipart, MultiPartIndex, PartAccounting,
+    PartEntry, MAX_SINGLE_ARTIFACT_BYTES,
+};
+
+pub use sha256::{sha256_hex, Sha256};
+
+pub use registry::{list_packs, InstalledPack};

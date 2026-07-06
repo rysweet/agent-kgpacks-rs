@@ -199,3 +199,68 @@ fn latest_version_returns_none_for_an_empty_list() {
 fn latest_version_errors_on_an_invalid_element() {
     assert!(latest_version(&["1.0.0", "bad"]).is_err());
 }
+
+// --- pack_version_from_release_tag (WS3 dated release-tag version derivation) -
+
+#[test]
+fn pack_version_from_release_tag_derives_unpadded_semver() {
+    use kgpacks_packs::pack_version_from_release_tag;
+
+    // The canonical WS3 contract: a zero-padded month in the tag becomes an
+    // UNPADDED SemVer core (SemVer 2.0 forbids leading zeros).
+    assert_eq!(
+        pack_version_from_release_tag("cve-2025.06").unwrap(),
+        "2025.6.0"
+    );
+    // An explicit patch is carried through.
+    assert_eq!(
+        pack_version_from_release_tag("cve-2025.06.1").unwrap(),
+        "2025.6.1"
+    );
+    // December (two-digit, no pad to drop) and a multi-digit patch.
+    assert_eq!(
+        pack_version_from_release_tag("cve-2024.12.10").unwrap(),
+        "2024.12.10"
+    );
+    // The name prefix is arbitrary — only the trailing dated segment matters.
+    assert_eq!(
+        pack_version_from_release_tag("world-history-2030.01").unwrap(),
+        "2030.1.0"
+    );
+    // Every derived version is valid SemVer 2.0.
+    assert!(is_valid_semver(
+        &pack_version_from_release_tag("cve-2025.06").unwrap()
+    ));
+}
+
+#[test]
+fn pack_version_from_release_tag_rejects_undated_and_malformed_tags() {
+    use kgpacks_packs::pack_version_from_release_tag;
+
+    for bad in [
+        "packs",       // the stable latest-pointer carries no dated version
+        "cve",         // undated
+        "cve-latest",  // undated pointer
+        "",            // empty
+        "cve-2025",    // missing month
+        "cve-2025.6",  // month must be two digits in the tag
+        "cve-2025.13", // month out of range (> 12)
+        "cve-2025.00", // month out of range (< 1)
+        "cve-25.06",   // year must be four digits
+    ] {
+        assert!(
+            pack_version_from_release_tag(bad).is_err(),
+            "expected {bad:?} to be rejected as undated/malformed"
+        );
+    }
+}
+
+#[test]
+fn pack_version_from_release_tag_errors_instead_of_panicking_on_a_huge_patch() {
+    use kgpacks_packs::pack_version_from_release_tag;
+
+    // The optional patch group is `\d+` (unbounded, untrusted): an over-long
+    // patch must fail cleanly rather than panic.
+    let huge = "cve-2025.06.18446744073709551616";
+    assert!(pack_version_from_release_tag(huge).is_err());
+}

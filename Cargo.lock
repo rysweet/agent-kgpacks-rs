@@ -924,7 +924,7 @@ dependencies = [
 
 [[package]]
 name = "kgpacks-agent"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rustyclawd-core",
  "serde_json",
@@ -934,7 +934,7 @@ dependencies = [
 
 [[package]]
 name = "kgpacks-backend"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "kgpacks-agent",
  "kgpacks-db",
@@ -944,7 +944,7 @@ dependencies = [
 
 [[package]]
 name = "kgpacks-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "kgpacks-agent",
  "kgpacks-db",
@@ -959,7 +959,7 @@ dependencies = [
 
 [[package]]
 name = "kgpacks-db"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "lbug",
  "tempfile",
@@ -968,11 +968,11 @@ dependencies = [
 
 [[package]]
 name = "kgpacks-embeddings"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "kgpacks-eval"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "kgpacks-agent",
  "kgpacks-db",
@@ -983,7 +983,7 @@ dependencies = [
 
 [[package]]
 name = "kgpacks-ingestion"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "kgpacks-agent",
  "kgpacks-db",
@@ -996,7 +996,7 @@ dependencies = [
 
 [[package]]
 name = "kgpacks-mcp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "kgpacks-db",
  "kgpacks-packs",
@@ -1005,7 +1005,7 @@ dependencies = [
 
 [[package]]
 name = "kgpacks-packs"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -1019,7 +1019,7 @@ dependencies = [
 
 [[package]]
 name = "kgpacks-query"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "kgpacks-agent",
  "kgpacks-db",
