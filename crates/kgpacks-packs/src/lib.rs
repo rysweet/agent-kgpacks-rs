@@ -31,6 +31,7 @@ pub mod packs_dir;
 pub mod registry;
 pub mod release;
 pub mod sha256;
+pub mod signing;
 pub mod versioning;
 
 pub use errors::{PacksError, Result};
@@ -40,6 +41,13 @@ pub use packs_dir::{ensure_packs_dir, resolve_packs_dir, PACKS_DIR_ENV};
 pub use manifest::{
     load_manifest, load_manifest_from_dir, manifest_path_in, pack_name_re, parse_manifest_str,
     save_manifest, validate_manifest, PackManifest, MANIFEST_FILENAME,
+};
+
+pub use signing::{
+    decode_public_key, pack_release_signature_filename, parse_trusted_public_key, signature_plan,
+    trusted_release_public_key, validate_signature_flags, verify_pack_index_signature,
+    PackIndexSignature, SignatureInputs, SignaturePlan, SigningKeyPair, PUBLIC_KEY_LEN,
+    SECRET_SEED_LEN, SIGNATURE_ALGORITHM, SIGNATURE_LEN,
 };
 
 pub use versioning::{

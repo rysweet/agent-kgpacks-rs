@@ -29,6 +29,10 @@ pub enum PacksError {
     /// An I/O error reading or writing a pack on disk.
     #[error(transparent)]
     Io(#[from] std::io::Error),
+
+    /// A release-index signing or signature-verification failure (WS7).
+    #[error("signature error: {0}")]
+    Signature(String),
 }
 
 /// Convenience result alias for fallible `kgpacks-packs` operations.
