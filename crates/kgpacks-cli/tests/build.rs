@@ -177,3 +177,78 @@ fn help_lists_the_build_command() {
     assert!(out.contains("--resume"));
     assert!(out.contains("--corpus"));
 }
+
+#[test]
+fn build_help_prints_usage() {
+    let out = run(&args(&["build", "--help"])).expect("build --help");
+    assert!(out.contains("kgpacks build"));
+    assert!(out.contains("--corpus"));
+    assert!(out.contains("--year"));
+}
+
+#[test]
+fn build_rejects_an_unknown_flag() {
+    let dir = tempdir().expect("tempdir");
+    let corpus_path = dir.path().join("corpus.json");
+    fs::write(&corpus_path, CORPUS).expect("write corpus");
+    let err = run(&args(&[
+        "build",
+        "cve",
+        "--corpus",
+        corpus_path.to_str().unwrap(),
+        "--yeer",
+        "2025",
+    ]))
+    .unwrap_err();
+    assert!(err.contains("unknown flag"), "got: {err}");
+}
+
+#[test]
+fn build_rejects_a_flag_shaped_value() {
+    // `--out --corpus x` must not silently make `--corpus` the output dir.
+    let dir = tempdir().expect("tempdir");
+    let corpus_path = dir.path().join("corpus.json");
+    fs::write(&corpus_path, CORPUS).expect("write corpus");
+    let err = run(&args(&[
+        "build",
+        "cve",
+        "--out",
+        "--corpus",
+        corpus_path.to_str().unwrap(),
+    ]))
+    .unwrap_err();
+    assert!(err.contains("missing value for --out"), "got: {err}");
+}
+
+#[test]
+fn build_rejects_an_extra_positional() {
+    let dir = tempdir().expect("tempdir");
+    let corpus_path = dir.path().join("corpus.json");
+    fs::write(&corpus_path, CORPUS).expect("write corpus");
+    let err = run(&args(&[
+        "build",
+        "packA",
+        "packB",
+        "--corpus",
+        corpus_path.to_str().unwrap(),
+    ]))
+    .unwrap_err();
+    assert!(err.contains("unexpected argument"), "got: {err}");
+}
+
+#[test]
+fn build_rejects_an_out_of_range_year() {
+    let dir = tempdir().expect("tempdir");
+    let corpus_path = dir.path().join("corpus.json");
+    fs::write(&corpus_path, CORPUS).expect("write corpus");
+    let err = run(&args(&[
+        "build",
+        "cve",
+        "--corpus",
+        corpus_path.to_str().unwrap(),
+        "--year",
+        "20255",
+    ]))
+    .unwrap_err();
+    assert!(err.contains("--year"), "got: {err}");
+}

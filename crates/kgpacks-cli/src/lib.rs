@@ -274,10 +274,13 @@ fn parse_build_args(args: &[String]) -> Result<BuildArgs, String> {
             }
             "--year" => {
                 let raw = take_value(args, i, "--year")?;
-                year = Some(
-                    raw.parse::<i64>()
-                        .map_err(|_| format!("--year must be an integer, got {raw}"))?,
-                );
+                let value = raw
+                    .parse::<i64>()
+                    .map_err(|_| format!("--year must be an integer, got {raw}"))?;
+                if !(1999..=2999).contains(&value) {
+                    return Err(format!("--year must be in 1999..=2999, got {value}"));
+                }
+                year = Some(value);
                 i += 2;
             }
             "--queue" => {
@@ -300,7 +303,15 @@ fn parse_build_args(args: &[String]) -> Result<BuildArgs, String> {
                 resume = true;
                 i += 1;
             }
+            // Reject unknown flags and stray extra positionals rather than
+            // silently dropping them (a typo'd flag must never "succeed").
+            other if other.starts_with('-') => {
+                return Err(format!("unknown flag for build: {other}"));
+            }
             other => {
+                if !positionals.is_empty() {
+                    return Err(format!("unexpected argument: {other}"));
+                }
                 positionals.push(other.to_string());
                 i += 1;
             }
@@ -327,9 +338,14 @@ fn parse_build_args(args: &[String]) -> Result<BuildArgs, String> {
 }
 
 fn take_value<'a>(args: &'a [String], i: usize, flag: &str) -> Result<&'a str, String> {
-    args.get(i + 1)
-        .map(String::as_str)
-        .ok_or_else(|| format!("missing value for {flag}"))
+    match args.get(i + 1).map(String::as_str) {
+        // Reject a following flag being swallowed as this flag's value; every
+        // build value is a path/int/semver, so none legitimately starts with
+        // `--` (this turns `--out --corpus x` into an error, not a pack named
+        // `--corpus`).
+        Some(value) if !value.starts_with("--") => Ok(value),
+        _ => Err(format!("missing value for {flag}")),
+    }
 }
 
 fn parse_positive(raw: &str, flag: &str) -> Result<usize, String> {
@@ -339,12 +355,37 @@ fn parse_positive(raw: &str, flag: &str) -> Result<usize, String> {
         .ok_or_else(|| format!("{flag} must be a positive integer, got {raw}"))
 }
 
+/// Usage text for the `build` subcommand (`kgpacks build --help`).
+fn build_help_text() -> String {
+    [
+        "kgpacks build <pack> --corpus <file.json> [options]",
+        "",
+        "Resumable, pipelined CVE pack build. Loads a JSON corpus and materializes",
+        "a pack with checkpoint/resume and a pipelined embed-then-load.",
+        "",
+        "Options:",
+        "  --corpus <file.json>   CVE corpus JSON array (required)",
+        "  --out <dir>            output pack directory (default: <packs-dir>/<pack>)",
+        "  --batch <n>            records per batch/checkpoint (default: 64)",
+        "  --limit <n>            cap on corpus records considered (a prefix)",
+        "  --year <y>             load only records whose published_year == y (1999..=2999)",
+        "  --with-entity-relations  materialize ENTITY_RELATION edges",
+        "  --queue <n>            embedded batches buffered between embed and load (default: 2)",
+        "  --pack-version <ver>   manifest version (default: 1.0.0)",
+        "  --resume               resume from a matching checkpoint, else clean restart",
+    ]
+    .join("\n")
+}
+
 /// `build <pack> --corpus <file.json>` — resumable, pipelined CVE pack build.
 ///
 /// Loads a CVE corpus from a JSON file (the seam the external #25 fetch fills),
 /// then materializes the pack with checkpoint/resume and a pipelined
 /// embed-then-load. Prints a JSON build report.
 fn cmd_build(packs_dir: &Path, args: &[String]) -> Result<String, String> {
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        return Ok(build_help_text());
+    }
     let parsed = parse_build_args(args)?;
     if parsed.pack.is_empty()
         || parsed.pack.contains('/')

@@ -200,9 +200,9 @@ fn parse_entities(value: Option<&Value>, index: usize) -> Result<Vec<CveEntity>>
         })?;
         out.push(CveEntity {
             entity_id: required_str(object.get("entity_id"), index, "entity.entity_id")?,
-            name: optional_str(object.get("name")),
-            type_: optional_str(object.get("type")),
-            description: optional_str(object.get("description")),
+            name: optional_str(object.get("name"), index, "entity.name")?,
+            type_: optional_str(object.get("type"), index, "entity.type")?,
+            description: optional_str(object.get("description"), index, "entity.description")?,
         });
     }
     Ok(out)
@@ -226,8 +226,8 @@ fn parse_relations(value: Option<&Value>, index: usize) -> Result<Vec<CveRelatio
         out.push(CveRelation {
             source_id: required_str(object.get("source_id"), index, "relation.source_id")?,
             target_id: required_str(object.get("target_id"), index, "relation.target_id")?,
-            relation: optional_str(object.get("relation")),
-            context: optional_str(object.get("context")),
+            relation: optional_str(object.get("relation"), index, "relation.relation")?,
+            context: optional_str(object.get("context"), index, "relation.context")?,
         });
     }
     Ok(out)
@@ -242,10 +242,13 @@ fn required_str(value: Option<&Value>, index: usize, field: &str) -> Result<Stri
     }
 }
 
-fn optional_str(value: Option<&Value>) -> String {
+fn optional_str(value: Option<&Value>, index: usize, field: &str) -> Result<String> {
     match value {
-        Some(Value::String(s)) => s.clone(),
-        _ => String::new(),
+        None | Some(Value::Null) => Ok(String::new()),
+        Some(Value::String(s)) => Ok(s.clone()),
+        Some(_) => Err(PacksError::Corpus(format!(
+            "record {index} `{field}` must be a string when present"
+        ))),
     }
 }
 
@@ -307,5 +310,24 @@ mod tests {
     #[test]
     fn rejects_a_record_missing_its_id() {
         assert!(FixtureCorpus::from_json_str(r#"[{"description":"no id"}]"#).is_err());
+    }
+
+    #[test]
+    fn rejects_a_present_but_mistyped_optional_field() {
+        // A present optional field of the wrong type is a corpus error, not a
+        // silent coercion to "" (data loss).
+        let err = FixtureCorpus::from_json_str(
+            r#"[{"id":"CVE-2025-0004","description":"d","entities":[{"entity_id":"e","name":123}]}]"#,
+        );
+        assert!(err.is_err(), "mistyped `name` must error, got {err:?}");
+    }
+
+    #[test]
+    fn allows_absent_or_null_optional_fields() {
+        let corpus = FixtureCorpus::from_json_str(
+            r#"[{"id":"CVE-2025-0005","description":"d","entities":[{"entity_id":"e","name":null}]}]"#,
+        )
+        .expect("null optional field is allowed");
+        assert_eq!(corpus.record(0).unwrap().entities[0].name, "");
     }
 }

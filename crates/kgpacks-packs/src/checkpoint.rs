@@ -130,8 +130,15 @@ impl BuildCheckpoint {
         json.push('\n');
 
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, json)?;
-        std::fs::rename(&tmp, path)?;
+        std::fs::write(&tmp, json).map_err(|err| {
+            let _ = std::fs::remove_file(&tmp);
+            PacksError::Io(err)
+        })?;
+        std::fs::rename(&tmp, path).map_err(|err| {
+            // Don't leave a stray temp file behind if the rename fails.
+            let _ = std::fs::remove_file(&tmp);
+            PacksError::Io(err)
+        })?;
         Ok(())
     }
 
