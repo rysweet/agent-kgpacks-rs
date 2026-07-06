@@ -187,6 +187,41 @@ let loaded = load_pack("/tmp/rust-expert")?;
 assert_eq!(loaded.graph_stats()?["articles"], 1.0);
 ```
 
+### Multi-part release + linear-scaling loader (WS5)
+
+Packs larger than
+[`MAX_SINGLE_ARTIFACT_BYTES`](crates/kgpacks-packs/src/release.rs) (2 GiB) are
+published as an ordered set of fixed-size parts. `plan_multipart_release` is the
+release tool's split/accounting step run **dry** (it computes the index a
+`pack pull` re-verifies; it publishes nothing): every non-final part is exactly
+`part_size`, `sum(parts.bytes) == total_bytes`, each part carries the SHA-256 of
+its own bytes, and the index carries the SHA-256 of the whole artifact. Size
+accounting (`part_accounting`) is pure `u64` arithmetic, so the >2 GiB path is
+covered without materializing gigabytes. Hashing uses a self-contained SHA-256
+([`kgpacks-packs::sha256`](crates/kgpacks-packs/src/sha256.rs)) — no external
+crypto dependency.
+
+```rust
+use kgpacks_packs::{plan_multipart_release, part_accounting, requires_multipart};
+
+// Split a (small, here) artifact into 1 KiB parts and hash each part + the whole.
+let index = plan_multipart_release(&artifact_bytes, 1024)?;
+assert_eq!(index.parts.iter().map(|p| p.bytes).sum::<u64>(), index.total_bytes);
+
+// >2 GiB accounting without allocating the bytes.
+assert!(requires_multipart(3 * 1024 * 1024 * 1024));
+let acct = part_accounting(3 * 1024 * 1024 * 1024, 64 * 1024 * 1024)?; // 48 parts
+```
+
+The graph loader is also guarded to scale **linearly**: `plan_load_statements`
+separates the load *plan* from execution so a structural test can assert that
+loading 2N records issues at most ~3× the statements of N, and that every
+edge-creation statement uses PK-indexed single-`MATCH` clauses rather than the
+O(N²) comma two-pattern `MATCH (a {..}), (b {..})`. These guards run in CI as
+part of `cargo test --workspace` (`kgpacks-packs/tests/multipart_release.rs`,
+`kgpacks-packs/tests/linear_scaling_guard.rs`, and
+`kgpacks-ingestion/tests/linear_scaling_guard.rs`).
+
 ## Ingestion pipeline (M3)
 
 `kgpacks-ingestion` drives the **build-pack → ingest** flow over the working

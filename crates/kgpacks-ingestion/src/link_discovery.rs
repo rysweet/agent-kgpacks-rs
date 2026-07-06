@@ -16,6 +16,17 @@ use crate::util::{value_as_i64, value_as_string};
 /// link" (parity with the reference membership check).
 const EXISTING_STATES: [&str; 4] = ["loaded", "claimed", "discovered", "processed"];
 
+/// Cypher that creates one `LINKS_TO` edge between two existing articles, each
+/// located by its **primary key** (`title`) in its own single `MATCH`.
+///
+/// Two PK-indexed point lookups replace the O(N²) comma two-pattern
+/// `MATCH (source {..}), (target {..})`, whose cartesian shape pushes link
+/// creation toward quadratic work as the graph grows (the WS5 linear-scaling
+/// guard forbids that shape).
+pub const CREATE_LINK_CYPHER: &str = "MATCH (source:Article {title: $source}) \
+     MATCH (target:Article {title: $target}) \
+     CREATE (source)-[:LINKS_TO {link_type: 'internal'}]->(target)";
+
 /// Namespace prefixes (lowercased) that are filtered out of expansion.
 const INVALID_PREFIXES: [&str; 15] = [
     "wikipedia:",
@@ -207,8 +218,7 @@ impl<'c, 'db> LinkDiscovery<'c, 'db> {
     /// Parity with `_create_link`.
     fn create_link(&self, source_title: &str, target_title: &str) -> Result<()> {
         self.conn.run_params(
-            "MATCH (source:Article {title: $source}), (target:Article {title: $target}) \
-             CREATE (source)-[:LINKS_TO {link_type: 'internal'}]->(target)",
+            CREATE_LINK_CYPHER,
             vec![
                 ("source", Value::String(source_title.to_string())),
                 ("target", Value::String(target_title.to_string())),
