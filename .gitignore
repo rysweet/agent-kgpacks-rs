@@ -7,3 +7,6 @@ rustc-ice-*.txt
 # Editor / OS noise
 *.swp
 .DS_Store
+
+# Agent session artifacts
+.claude/

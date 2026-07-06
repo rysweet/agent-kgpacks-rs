@@ -34,6 +34,7 @@
 
 mod constants;
 mod cypher_safety;
+mod entity_graph;
 mod errors;
 mod hybrid;
 mod legacy;
@@ -49,6 +50,10 @@ pub use constants::{
     default_stop_words, DEFAULT_K, DEFAULT_NODE_TABLE, DEFAULT_VECTOR_INDEX, DEFAULT_WEIGHTS,
 };
 pub use cypher_safety::validate_cypher;
+pub use entity_graph::{
+    entity_graph, EntityGraphEdge, EntityGraphMode, EntityGraphNode, EntityGraphOptions,
+    EntityGraphResult, ResolvedEntityGraphMode,
+};
 pub use errors::{CypherValidationError, QueryError, Result};
 pub use hybrid::hybrid_retrieve;
 pub use retriever::{PackRetriever, RetrieverConfig};

@@ -375,6 +375,41 @@ step) so the default gates stay lean and hermetic; the retrieval ENHANCEMENTS
 layer, the MCP/backend HTTP surfaces, and the `parity/` harness remain
 follow-ups beyond this core flow.
 
+## Entity-graph traversal + scalable `ENTITY_RELATION` bulk load (WS8)
+
+`ENTITY_RELATION` becomes a real, scalable feature (mirror of the `agent-kgpacks-ts`
+WS8 workstream). Two capabilities land across `kgpacks-query`, `kgpacks-backend`
+and `kgpacks-ingestion`:
+
+- **Entity-graph traversal** — [`kgpacks_query::entity_graph`] walks the
+  `Entity` / `HAS_ENTITY` / `ENTITY_RELATION` graph around a seed entity, bounded to
+  `depth 1..=3` and a node `limit`, with deterministic `(depth ASC, name ASC)`
+  ordering and a typed result (nodes with `depth` / `type` / `articles_count`, edges
+  with `source` / `target` / `weight`). `mode = auto` uses **co-occurrence** (two
+  entities share an `Article`) when the pack has no `ENTITY_RELATION` edges — the
+  CVE-pack default — and explicit **relation** traversal when it does.
+- **Backend API** — `kgpacks-backend` exposes `GET /api/v1/graph/entities`
+  ([`graph_entities`]): required `entity`; bounded `depth` (1..3) and `limit`
+  (1..200); enum `mode`; the standard `MISSING_PARAMETER` / `INVALID_PARAMETER` 400
+  envelopes; and a `404 NOT_FOUND` for an unknown seed.
+- **Scalable bulk `ENTITY_RELATION` load** —
+  [`kgpacks_ingestion::bulk_create_entity_relations`] prefers LadybugDB's
+  `COPY ENTITY_RELATION FROM <csv>` and falls back to PK-indexed
+  `UNWIND … MATCH … MATCH … CREATE` batches. Both are non-O(N²) (no comma
+  two-pattern `MATCH`); the per-article processor now uses this instead of a per-row
+  round-trip loop. `ENTITY_RELATION` stays default-skipped in the CVE builder (built
+  only under `--with-entity-relations`).
+
+See [docs/entity-graph.md](docs/entity-graph.md) for the modes, request contract,
+result shape, and bulk-loader semantics. Each reference module maps to a Rust module
+proven by a mirroring test:
+
+| Reference (`agent-kgpacks-ts`)                     | Rust module                                        | Test                                     |
+| -------------------------------------------------- | -------------------------------------------------- | ---------------------------------------- |
+| `query/src/entity-graph.ts`                        | `kgpacks-query::entity_graph`                      | `query/tests/entity_graph.rs`            |
+| `backend/src/{routes,services}/graph-entities.ts`  | `kgpacks-backend::graph_entities` (+ `errors`)     | `backend/tests/graph_entities.rs`        |
+| `ingestion/src/streaming-loader.ts` (bulk REL)     | `kgpacks-ingestion::entity_relations`              | `ingestion/tests/entity_relations.rs`    |
+
 ## License
 
 [MIT](LICENSE).
