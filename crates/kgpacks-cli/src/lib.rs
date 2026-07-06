@@ -20,6 +20,7 @@
 use std::path::{Path, PathBuf};
 
 use kgpacks_agent::{Agent, CopilotAgent, CopilotAgentOptions, Transport};
+use kgpacks_corpus::{CorpusKind, FetchOptions, DEFAULT_MAX_BYTES};
 use kgpacks_db::{Database, GraphStore};
 use kgpacks_embeddings::{Embedder, DEFAULT_DIM};
 use kgpacks_eval::{EvalCase, Harness};
@@ -94,6 +95,7 @@ fn dispatch(
         "status" => cmd_status(&packs_dir),
         "pack" => cmd_pack(&packs_dir, &rest[1..]),
         "ask" => cmd_ask(&packs_dir, &rest[1..], make_transport),
+        "fetch-cve-corpus" => cmd_fetch_cve_corpus(&rest[1..]),
         other => Err(format!("unknown command: {other}")),
     }
 }
@@ -106,6 +108,7 @@ fn help_text() -> String {
         "        [--resume]                                          resumable, pipelined CVE pack build",
         "  query <pack> <question> [-k <n>] [--mode vector|hybrid]   ranked retrieval as JSON",
         "  ask   <pack> <question> [-k <n>] [--mode vector|hybrid] [--multidoc]   graph-RAG answer as JSON",
+        "  fetch-cve-corpus [--tag <tag>] [--kind baseline|delta] [--dest <dir>]   acquire the CVE corpus",
         "  status                                                    installed packs summary as JSON",
         "  pack list                                                 installed packs (name, version, description) as JSON",
         "  pack info <pack>                                          a pack's full manifest as JSON",
@@ -798,6 +801,150 @@ fn cmd_ask(
     serde_json::to_string_pretty(&json).map_err(|e| e.to_string())
 }
 
+/// Default download/extract directory for `fetch-cve-corpus` (mirrors the reference
+/// `.scratch/cve`).
+const FETCH_DEFAULT_DEST: &str = ".scratch/cve";
+
+/// The outcome of parsing `fetch-cve-corpus` arguments.
+enum FetchParse {
+    /// `--help` / `-h` was requested.
+    Help,
+    /// Validated options ready to run.
+    Run(FetchOptions),
+}
+
+fn fetch_help_text() -> String {
+    [
+        "usage: kgpacks fetch-cve-corpus [--tag <tag>] [--kind baseline|delta] [--dest <dir>]",
+        "                                [--max-bytes <N>] [--keep-archive] [--limit <N>]",
+        "",
+        "  --tag          release tag (default: latest release)",
+        "  --kind         baseline (full corpus, default) or delta (incremental)",
+        "  --dest         download/extract directory (default: .scratch/cve)",
+        "  --max-bytes    hard download cap in bytes (default: 3 GiB)",
+        "  --keep-archive keep the downloaded .zip after extraction",
+        "  --limit        --limit to echo in the printed build command",
+        "",
+        "  Requires building with `--features net`. Set GITHUB_TOKEN to raise API rate limits.",
+    ]
+    .join("\n")
+}
+
+/// Parse + validate `fetch-cve-corpus` arguments into [`FetchOptions`].
+///
+/// Kept separate from the (feature-gated) execution so the whole CLI contract —
+/// flag parsing and validation — is testable in the default, offline build.
+fn parse_fetch_args(args: &[String]) -> Result<FetchParse, String> {
+    // Returns the value following `name`, erroring when the flag is present but has no
+    // value (mirrors how `parse_query_args` errors on a missing `-k` value).
+    let opt = |name: &str| -> Result<Option<&String>, String> {
+        match args.iter().position(|a| a == name) {
+            Some(i) => match args.get(i + 1) {
+                Some(value) => Ok(Some(value)),
+                None => Err(format!("missing value for {name}")),
+            },
+            None => Ok(None),
+        }
+    };
+
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        return Ok(FetchParse::Help);
+    }
+
+    let tag = opt("--tag")?.cloned();
+    let kind_raw = opt("--kind")?.map(String::as_str).unwrap_or("baseline");
+    let kind = CorpusKind::parse(kind_raw)
+        .ok_or_else(|| format!("--kind must be \"baseline\" or \"delta\" (got \"{kind_raw}\")"))?;
+    let dest = opt("--dest")?
+        .map(String::as_str)
+        .unwrap_or(FETCH_DEFAULT_DEST);
+    let keep_archive = args.iter().any(|a| a == "--keep-archive");
+
+    let max_bytes = match opt("--max-bytes")? {
+        Some(raw) => raw
+            .parse::<u64>()
+            .ok()
+            .filter(|&n| n > 0)
+            .ok_or_else(|| format!("--max-bytes must be a positive integer (got \"{raw}\")"))?,
+        None => DEFAULT_MAX_BYTES,
+    };
+    let limit = match opt("--limit")? {
+        Some(raw) => Some(
+            raw.parse::<u64>()
+                .ok()
+                .filter(|&n| n > 0)
+                .ok_or_else(|| format!("--limit must be a positive integer (got \"{raw}\")"))?,
+        ),
+        None => None,
+    };
+
+    Ok(FetchParse::Run(FetchOptions {
+        tag,
+        kind,
+        dest_dir: PathBuf::from(dest),
+        limit,
+        keep_archive,
+        max_bytes,
+    }))
+}
+
+/// `fetch-cve-corpus` — acquire the CVE corpus from the CVEProject/cvelistV5 release
+/// service (resolve a release, download + double-unzip the asset, record provenance,
+/// print the ready-to-run build command).
+fn cmd_fetch_cve_corpus(args: &[String]) -> Result<String, String> {
+    match parse_fetch_args(args)? {
+        FetchParse::Help => Ok(fetch_help_text()),
+        FetchParse::Run(options) => run_fetch(options),
+    }
+}
+
+/// Execute a fetch with the real network effects (requires the `net` feature).
+#[cfg(feature = "net")]
+fn run_fetch(options: FetchOptions) -> Result<String, String> {
+    use kgpacks_corpus::{
+        fetch_corpus, now_iso8601, GithubReleaseResolver, HttpDownloader, UnzipExtractor,
+    };
+
+    let to_msg = |e: kgpacks_corpus::CorpusError| -> String {
+        match e.url() {
+            Some(url) => format!("{e} ({url})"),
+            None => e.to_string(),
+        }
+    };
+
+    let resolver = GithubReleaseResolver::new().map_err(to_msg)?;
+    let downloader = HttpDownloader::new().map_err(to_msg)?;
+    let extractor = UnzipExtractor::new();
+
+    let outcome =
+        fetch_corpus(&options, &resolver, &downloader, &extractor, &now_iso8601).map_err(to_msg)?;
+
+    let summary = serde_json::json!({
+        "tag": outcome.parsed.tag,
+        "kind": outcome.parsed.kind.as_str(),
+        "corpusDate": outcome.parsed.corpus_date,
+        "asset": outcome.parsed.asset.name,
+        "bytes": outcome.bytes,
+        "srcDir": outcome.src_dir.to_string_lossy(),
+    });
+    let summary = serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())?;
+    Ok(format!(
+        "{summary}\n\nNext — build a pack with matching provenance:\n\n  {}\n",
+        outcome.build_command
+    ))
+}
+
+/// Without the `net` feature the real GitHub resolver/downloader are not compiled, so
+/// report that clearly (mirroring how `ask` requires the `copilot` feature).
+#[cfg(not(feature = "net"))]
+fn run_fetch(_options: FetchOptions) -> Result<String, String> {
+    Err(
+        "`fetch-cve-corpus` requires the network integration: rebuild with `--features net` \
+         (e.g. `cargo run --bin kgpacks --features net -- fetch-cve-corpus`)"
+            .to_string(),
+    )
+}
+
 /// Flags parsed for `pack pull`.
 struct PullArgs {
     pack: String,
@@ -998,12 +1145,108 @@ mod tests {
         let out = run(&["help".to_string()]).unwrap();
         assert!(out.contains("query"));
         assert!(out.contains("ask"));
+        assert!(out.contains("fetch-cve-corpus"));
         assert!(out.contains("status"));
         assert!(out.contains("pack list"));
         assert!(out.contains("pack info"));
         assert!(out.contains("pack validate"));
         assert!(out.contains("pack release-plan"));
         assert!(out.contains("pack pull"));
+    }
+
+    fn strvec(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn fetch_help_lists_flags() {
+        let out = cmd_fetch_cve_corpus(&strvec(&["--help"])).unwrap();
+        assert!(out.contains("--tag"));
+        assert!(out.contains("--kind"));
+        assert!(out.contains("--dest"));
+        assert!(out.contains("--features net"));
+    }
+
+    #[test]
+    fn fetch_parse_defaults_to_latest_baseline() {
+        match parse_fetch_args(&[]).unwrap() {
+            FetchParse::Run(opts) => {
+                assert!(opts.tag.is_none());
+                assert_eq!(opts.kind, CorpusKind::Baseline);
+                assert_eq!(opts.dest_dir, PathBuf::from(FETCH_DEFAULT_DEST));
+                assert_eq!(opts.max_bytes, DEFAULT_MAX_BYTES);
+                assert!(!opts.keep_archive);
+                assert!(opts.limit.is_none());
+            }
+            FetchParse::Help => panic!("did not expect help"),
+        }
+    }
+
+    #[test]
+    fn fetch_parse_reads_all_flags() {
+        let args = strvec(&[
+            "--tag",
+            "cve_2026-07-03_0000Z",
+            "--kind",
+            "delta",
+            "--dest",
+            "/tmp/cve",
+            "--max-bytes",
+            "1000",
+            "--keep-archive",
+            "--limit",
+            "500",
+        ]);
+        match parse_fetch_args(&args).unwrap() {
+            FetchParse::Run(opts) => {
+                assert_eq!(opts.tag.as_deref(), Some("cve_2026-07-03_0000Z"));
+                assert_eq!(opts.kind, CorpusKind::Delta);
+                assert_eq!(opts.dest_dir, PathBuf::from("/tmp/cve"));
+                assert_eq!(opts.max_bytes, 1000);
+                assert!(opts.keep_archive);
+                assert_eq!(opts.limit, Some(500));
+            }
+            FetchParse::Help => panic!("did not expect help"),
+        }
+    }
+
+    #[test]
+    fn fetch_rejects_a_bad_kind() {
+        assert!(parse_fetch_args(&strvec(&["--kind", "sideways"])).is_err());
+    }
+
+    #[test]
+    fn fetch_rejects_a_non_positive_max_bytes() {
+        assert!(parse_fetch_args(&strvec(&["--max-bytes", "0"])).is_err());
+        assert!(parse_fetch_args(&strvec(&["--max-bytes", "notanumber"])).is_err());
+    }
+
+    #[test]
+    fn fetch_rejects_a_non_positive_limit() {
+        assert!(parse_fetch_args(&strvec(&["--limit", "0"])).is_err());
+    }
+
+    #[test]
+    fn fetch_rejects_a_non_numeric_limit() {
+        assert!(parse_fetch_args(&strvec(&["--limit", "notanumber"])).is_err());
+    }
+
+    #[test]
+    fn fetch_rejects_a_flag_with_no_value() {
+        for flag in ["--tag", "--kind", "--dest", "--max-bytes", "--limit"] {
+            assert!(
+                parse_fetch_args(&strvec(&[flag])).is_err(),
+                "{flag} with no value should error"
+            );
+        }
+    }
+
+    #[cfg(not(feature = "net"))]
+    #[test]
+    fn fetch_without_net_reports_the_feature_requirement() {
+        // Valid args, but the real network path is not compiled in the default build.
+        let err = cmd_fetch_cve_corpus(&strvec(&["--kind", "delta"])).unwrap_err();
+        assert!(err.contains("--features net"));
     }
 
     #[test]

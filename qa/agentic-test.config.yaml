@@ -1,0 +1,37 @@
+# gadugi-test (agentic-test) configuration for the CVE-corpus CLI scenarios.
+#
+# These scenarios exercise the `kgpacks fetch-cve-corpus` command's offline,
+# deterministic surfaces (help + argument validation) — they never perform a real
+# network download. Build the binary and put it on PATH first, e.g.:
+#
+#   cargo build -p kgpacks-cli
+#   export PATH="$(cargo metadata --format-version 1 \
+#     | python3 -c 'import json,sys;print(json.load(sys.stdin)["target_directory"])')/debug:$PATH"
+#
+# then run from this directory:  gadugi-test run -d scenarios -c agentic-test.config.yaml
+
+execution:
+  maxParallel: 3
+  defaultTimeout: 30000
+  continueOnFailure: true
+  maxRetries: 0
+  retryDelay: 1000
+
+cli:
+  executablePath: kgpacks
+  workingDirectory: ./
+  defaultTimeout: 30000
+  environment: {}
+  captureOutput: true
+
+logging:
+  level: info
+  console: true
+  format: structured
+
+reporting:
+  outputDir: ./reports
+  formats:
+    - json
+  includeScreenshots: false
+  includeLogs: true

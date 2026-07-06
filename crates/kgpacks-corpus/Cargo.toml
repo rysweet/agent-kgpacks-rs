@@ -1,0 +1,25 @@
+[package]
+name = "kgpacks-corpus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "SSRF-guarded CVE-corpus acquisition from the CVEProject/cvelistV5 release service."
+
+[features]
+# Off by default so the workspace gates stay lean/offline (mirroring the
+# `kgpacks-cli`/`kgpacks-agent` `copilot` gate). The parity-critical pure logic
+# and the injected-seam orchestrator are fully tested WITHOUT this feature; it
+# only pulls in the real reqwest-backed GitHub resolver + asset downloader.
+default = []
+net = ["dep:reqwest"]
+
+[dependencies]
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+url = { workspace = true }
+reqwest = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

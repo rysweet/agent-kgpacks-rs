@@ -948,6 +948,7 @@ name = "kgpacks-cli"
 version = "0.1.1"
 dependencies = [
  "kgpacks-agent",
+ "kgpacks-corpus",
  "kgpacks-db",
  "kgpacks-embeddings",
  "kgpacks-eval",
@@ -956,6 +957,17 @@ dependencies = [
  "kgpacks-query",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "kgpacks-corpus"
+version = "0.1.1"
+dependencies = [
+ "reqwest",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "url",
 ]
 
 [[package]]
@@ -1363,6 +1375,7 @@ dependencies = [
  "base64",
  "bytes",
  "encoding_rs",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "h2",
