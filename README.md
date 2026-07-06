@@ -139,12 +139,38 @@ Run the CLI:
 cargo run --bin kgpacks -- demo
 # ingested 1 chunk(s); pack=demo@0.1.0; score=1
 
-# Ranked retrieval over a built pack, as JSON:
-cargo run --bin kgpacks -- --packs-dir ./packs query rust-expert "what is ownership?" -k 5
+# Ranked retrieval over a built pack, as JSON (uses the default packs dir):
+cargo run --bin kgpacks -- query rust-expert "what is ownership?" -k 5
 
 # Graph-RAG: retrieve, then synthesize a grounded answer (needs the `copilot`
 # feature to reach the real Copilot backend):
-cargo run --bin kgpacks --features copilot -- --packs-dir ./packs ask rust-expert "what is ownership?"
+cargo run --bin kgpacks --features copilot -- ask rust-expert "what is ownership?"
+```
+
+### Packs directory
+
+The CLI and the MCP server read installed packs from the same directory, so a
+pack installed by one is found by the other. It is resolved with this precedence
+(highest first):
+
+1. the `--packs-dir <dir>` flag (CLI only);
+2. the `KGPACKS_PACKS_DIR` environment variable;
+3. the default: `$XDG_DATA_HOME/kgpacks` when `XDG_DATA_HOME` is set (non-empty),
+   otherwise `~/.local/share/kgpacks`.
+
+Empty or whitespace-only overrides (both the flag and the env var) are treated
+as unset and fall through to the next level. The default directory is created on
+first use.
+
+```bash
+# Default location (~/.local/share/kgpacks or $XDG_DATA_HOME/kgpacks):
+cargo run --bin kgpacks -- query rust-expert "what is ownership?"
+
+# Override for one process via the environment:
+KGPACKS_PACKS_DIR=/srv/packs cargo run --bin kgpacks -- query rust-expert "what is ownership?"
+
+# Override explicitly with the flag (wins over the environment):
+cargo run --bin kgpacks -- --packs-dir ./packs query rust-expert "what is ownership?"
 ```
 
 CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the four default gates
