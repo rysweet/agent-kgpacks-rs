@@ -53,6 +53,7 @@ under [`crates/`](crates/) and share versioning through the root
 | `kgpacks-agent`      | `@kgpacks/agent`     | Graph-RAG agent over the Copilot SDK / RustyClawd.           |
 | `kgpacks-query`      | `@kgpacks/query`     | Hybrid retrieval, reranking and cypher-RAG.                   |
 | `kgpacks-ingestion`  | `@kgpacks/ingestion` | Fetch / chunk / extract / embed ingestion pipeline.          |
+| `kgpacks-corpus`     | `scripts/cve-corpus` | SSRF-guarded CVE-corpus acquisition (CVEProject/cvelistV5).   |
 | `kgpacks-eval`       | `@kgpacks/eval`      | Evaluation harness (baselines, judge, metrics).              |
 | `kgpacks-mcp`        | `@kgpacks/mcp`       | Model Context Protocol server exposing pack queries.         |
 | `kgpacks-backend`    | `@kgpacks/backend`   | HTTP API surface (query / SSE).                              |
@@ -115,6 +116,19 @@ workspace. As of M2, `kgpacks-db` consumes `lbug`; the others remain stubs.
   synthesis), the `kgpacks-mcp` / `kgpacks-backend` HTTP surfaces, and the
   `parity/` harness remain follow-ups beyond this core flow.
 
+## External services
+
+- **CVE corpus (CVEProject/cvelistV5).** `kgpacks-corpus` (the `kgpacks
+  fetch-cve-corpus` command) acquires the CVE Record Format 5.1 corpus from the
+  external CVEProject/cvelistV5 GitHub release service — resolving a release, selecting
+  the baseline/delta asset, SSRF-guarded stream-downloading it (byte cap + timeout +
+  per-hop redirect re-validation against a GitHub host allowlist), double-unzipping it,
+  and recording provenance (release **tag → `--corpus-commit`**, **date →
+  `--corpus-date`**). The parity-critical selection/validation/provenance logic is pure
+  and unit-tested with zero I/O; the real `reqwest` network effects are behind the
+  opt-in `net` feature. See [docs/cve-corpus.md](docs/cve-corpus.md). (Mirror of
+  `agent-kgpacks-ts` #87.)
+
 ## Build and test
 
 Requires a stable Rust toolchain (`rustup`, with `rustfmt` and `clippy`) and a
@@ -141,12 +155,17 @@ cargo run --bin kgpacks -- --packs-dir ./packs query rust-expert "what is owners
 # Graph-RAG: retrieve, then synthesize a grounded answer (needs the `copilot`
 # feature to reach the real Copilot backend):
 cargo run --bin kgpacks --features copilot -- --packs-dir ./packs ask rust-expert "what is ownership?"
+
+# Acquire the CVE corpus from the CVEProject/cvelistV5 release service (needs the
+# `net` feature for the real GitHub download; see docs/cve-corpus.md):
+cargo run --bin kgpacks --features net -- fetch-cve-corpus --kind delta
 ```
 
 CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the four default gates
 (build / test / fmt / clippy) plus a dedicated `--features copilot` build+clippy step
-(so the real RustyClawd transport stays compiled and linted), with all GitHub Actions
-pinned to commit SHAs.
+(so the real RustyClawd transport stays compiled and linted) and a `--features net`
+step (so the real `kgpacks-corpus` GitHub resolver/downloader stays compiled, linted and
+tested), with all GitHub Actions pinned to commit SHAs.
 
 ## Graph store + packs (M2)
 

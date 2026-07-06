@@ -7,3 +7,16 @@ rustc-ice-*.txt
 # Editor / OS noise
 *.swp
 .DS_Store
+
+# gadugi-test (agentic-test) runtime output under qa/
+/qa/outputs/
+/qa/reports/
+/qa/logs/
+/qa/temp/
+/qa/screenshots/
+
+# gadugi-test writes a logs/ dir relative to its cwd
+/logs/
+
+# CVE corpus fetch scratch directory (default --dest)
+/.scratch/

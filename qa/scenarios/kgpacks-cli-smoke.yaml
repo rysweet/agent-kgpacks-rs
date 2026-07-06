@@ -1,0 +1,36 @@
+id: kgpacks-cli-smoke
+name: kgpacks binary runs and reports a version
+description: >
+  Baseline smoke test that the built `kgpacks` binary runs and the version
+  command exits cleanly — the harness prerequisite for the fetch-cve-corpus
+  scenarios (issue #25).
+priority: MEDIUM
+interface: CLI
+tags: [cli, cve-corpus, issue-25, smoke]
+metadata:
+  priority: medium
+  tags: [cli, cve-corpus, issue-25, smoke]
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+steps:
+  - action: execute
+    target: kgpacks version
+    description: Print the CLI version
+    params:
+      command: kgpacks
+      args: ["version"]
+  - action: validate_exit_code
+    target: "0"
+    description: The command exits successfully
+    params:
+      text: "0"
+verifications:
+  - type: output
+    target: stdout
+    expected: "0.1.0"
+    operator: contains
+    description: Reports the workspace version
+estimatedDuration: 10
+enabled: true
