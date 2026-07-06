@@ -486,3 +486,31 @@ fn without_entity_relations_no_relation_edges_are_created() {
     assert_eq!(s.entity_relation, 0, "relations disabled -> no edges");
     assert_eq!(s.has_entity, 10, "HAS_ENTITY edges are still created");
 }
+
+#[test]
+fn duplicate_corpus_ids_are_loaded_once() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pack_dir = dir.path().join("cve");
+    // Two records share the same CVE id (e.g. a corpus with a stray duplicate),
+    // one in the first batch and one in a later batch.
+    let corpus = FixtureCorpus::new(vec![
+        CveRecord::new("CVE-2025-0000", "first"),
+        CveRecord::new("CVE-2025-0001", "second"),
+        CveRecord::new("CVE-2025-0000", "duplicate of the first"),
+    ]);
+
+    let report = build_cve_pack(
+        &pack_dir,
+        &PackManifest::new("cve", "1.0.0"),
+        &params("fixture", 2, false),
+        &corpus,
+        &Embedder::new(DEFAULT_DIM),
+        &opts(false),
+    )
+    .expect("build must not fail on a duplicate id");
+
+    // The duplicate is skipped: two distinct articles, not three.
+    assert_eq!(report.counts.articles, 2);
+    let s = summarize(&pack_dir);
+    assert_eq!(s.articles, vec!["CVE-2025-0000", "CVE-2025-0001"]);
+}

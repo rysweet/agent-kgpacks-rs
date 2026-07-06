@@ -430,9 +430,15 @@ fn bulk_rw_options() -> DatabaseOptions {
     }
 }
 
-/// Load every not-yet-loaded record of `batch` into the store, updating the
-/// dedup sets and running counts. Records already present (by CVE id) are
-/// skipped, so a resumed batch is idempotent.
+/// Load every not-yet-loaded record of `batch` into the store as a single
+/// transaction, updating the dedup sets and running counts.
+///
+/// Wrapping the whole batch in one transaction makes it **atomic**: a crash
+/// before `COMMIT` rolls the batch back entirely, so an `Article` exists in the
+/// store iff its record was fully loaded. That is what lets a resumed run treat
+/// the store as authoritative — it only ever redoes an uncommitted (rolled-back)
+/// batch, never a half-written record. Records already present by CVE id are
+/// skipped, so a redone batch is idempotent even against duplicate corpus ids.
 fn load_batch(
     conn: &Connection<'_>,
     batch: &EmbeddedBatch,
@@ -441,13 +447,19 @@ fn load_batch(
     entities_seen: &mut HashSet<String>,
     counts: &mut BuildCounts,
 ) -> Result<()> {
+    conn.run("BEGIN TRANSACTION")?;
     for (record, vector) in &batch.items {
         if loaded.contains(&record.id) {
             continue;
         }
-        load_record(conn, record, vector, with_relations, entities_seen, counts)?;
+        if let Err(err) = load_record(conn, record, vector, with_relations, entities_seen, counts) {
+            // Leave the connection clean for a later retry/resume.
+            let _ = conn.run("ROLLBACK");
+            return Err(err);
+        }
         loaded.insert(record.id.clone());
     }
+    conn.run("COMMIT")?;
     Ok(())
 }
 
