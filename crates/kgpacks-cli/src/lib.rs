@@ -106,7 +106,8 @@ fn help_text() -> String {
         "  version                                                   print the version",
         "",
         "build resumes from a <pack>/graph.lbug.build-checkpoint.json sidecar when --resume is",
-        "given and the build parameters are unchanged; otherwise it starts a clean build.",
+        "given and the build parameters are unchanged; otherwise it starts a clean build. A",
+        "completed pack (with a manifest) is never overwritten — remove it to rebuild.",
     ]
     .join("\n")
 }
@@ -400,13 +401,23 @@ fn cmd_build(packs_dir: &Path, args: &[String]) -> Result<String, String> {
         .clone()
         .unwrap_or_else(|| packs_dir.join(&parsed.pack));
 
-    let corpus = FixtureCorpus::from_json_file(&parsed.corpus).map_err(|e| e.to_string())?;
+    // Read the corpus once: parse it, and fingerprint its bytes so the build's
+    // params hash binds the corpus *content* (a mid-resume edit then triggers a
+    // clean restart instead of mixing old and new records).
+    let raw = std::fs::read_to_string(&parsed.corpus)
+        .map_err(|e| format!("cannot read corpus at {}: {e}", parsed.corpus.display()))?;
+    let corpus = FixtureCorpus::from_json_str(&raw).map_err(|e| e.to_string())?;
+    let src = format!(
+        "{}#sha256:{}",
+        parsed.corpus.display(),
+        kgpacks_packs::content_fingerprint(raw.as_bytes())
+    );
 
     // A single deterministic embedder backs the build; its model identity is
     // recorded in the params hash so a future model swap forces a clean rebuild.
     let embedder = Embedder::new(DEFAULT_DIM);
     let params = BuildParams {
-        src: parsed.corpus.display().to_string(),
+        src,
         year: parsed.year,
         limit: parsed.limit,
         batch: parsed.batch,

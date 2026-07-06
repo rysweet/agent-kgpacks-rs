@@ -390,6 +390,57 @@ fn year_filter_loads_only_matching_records() {
 }
 
 #[test]
+fn a_finished_pack_is_not_clobbered_even_with_a_stray_checkpoint() {
+    // A crash between the manifest write and the checkpoint clear can leave a
+    // complete pack that still carries a sidecar. A later non-resume (or
+    // mismatched-resume) build must refuse rather than wipe the finished pack.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pack_dir = dir.path().join("cve");
+    let corpus = sample_corpus(4);
+    let p = params("fixture", 2, false);
+
+    build_cve_pack(
+        &pack_dir,
+        &PackManifest::new("cve", "1.0.0"),
+        &p,
+        &corpus,
+        &Embedder::new(DEFAULT_DIM),
+        &opts(false),
+    )
+    .expect("clean build");
+
+    // Simulate the surviving sidecar.
+    let cp_path = checkpoint_path_for(pack_dir.join(GRAPH_STORE_FILENAME));
+    BuildCheckpoint {
+        params_hash: p.params_hash(),
+        last_committed_batch: 2,
+        source_offset: 4,
+        counts: BuildCounts {
+            articles: 4,
+            entities: 5,
+            relationships: 8,
+        },
+    }
+    .save(&cp_path)
+    .expect("write stray checkpoint");
+
+    // A non-resume rebuild must refuse (not wipe) the finished pack.
+    let err = build_cve_pack(
+        &pack_dir,
+        &PackManifest::new("cve", "1.0.0"),
+        &p,
+        &corpus,
+        &Embedder::new(DEFAULT_DIM),
+        &opts(false),
+    );
+    assert!(err.is_err(), "must refuse to clobber a finished pack");
+    // The finished pack is intact.
+    assert!(pack_dir.join(GRAPH_STORE_FILENAME).is_file());
+    assert!(pack_dir.join("manifest.json").is_file());
+    assert_eq!(summarize(&pack_dir).articles.len(), 4);
+}
+
+#[test]
 fn a_fresh_build_refuses_to_clobber_a_finished_pack() {
     let dir = tempfile::tempdir().expect("tempdir");
     let pack_dir = dir.path().join("cve");

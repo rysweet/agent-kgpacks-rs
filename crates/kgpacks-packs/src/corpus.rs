@@ -79,10 +79,16 @@ impl CveRecord {
 
 /// A corpus of CVE records in a stable, offset-addressable order.
 ///
-/// Implementations must return the **same record for the same offset** across
-/// calls within a build, and must be safe to share across threads (`Sync`) so
-/// the builder's embedding stage can read records from a worker thread while the
-/// load stage writes to the database on the main thread.
+/// Implementations must return the **same record for the same offset** — both
+/// across calls within a build and **across a later resume of the same build**
+/// (the resume cursor is a raw offset into this source). A source backed by
+/// mutable storage should therefore be pinned to an immutable snapshot for the
+/// lifetime of a build; the CLI does this by folding a content fingerprint of
+/// the corpus file into the build's `params_hash`, so an edited corpus restarts
+/// cleanly rather than resuming against changed content. Implementations must
+/// also be safe to share across threads (`Sync`) so the builder's embedding
+/// stage can read records from a worker thread while the load stage writes to
+/// the database on the main thread.
 pub trait CorpusSource: Sync {
     /// Total number of records available.
     fn len(&self) -> usize;

@@ -45,3 +45,14 @@ pub use cve_build::{
     build_cve_pack, cve_schema_ddl, BuildParams, CveBuildReport, PipelineOptions, CVE_CATEGORY,
     DEFAULT_BATCH_SIZE, DEFAULT_QUEUE_CAPACITY,
 };
+
+/// A stable content fingerprint (SHA-256 hex) of `bytes`.
+///
+/// Callers building from a mutable source (e.g. a corpus file) fold this into
+/// [`BuildParams::src`] so the build's `params_hash` binds the corpus *content*,
+/// not just its path: if the content changes between an interrupted run and a
+/// resume, the hash no longer matches and the build cleanly restarts instead of
+/// mixing old and new records.
+pub fn content_fingerprint(bytes: &[u8]) -> String {
+    sha256::hex_digest(bytes)
+}

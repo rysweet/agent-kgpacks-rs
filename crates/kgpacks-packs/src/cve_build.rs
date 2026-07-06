@@ -118,6 +118,9 @@ pub struct PipelineOptions {
     ///
     /// A controlled interruption seam: it models a crash after N committed
     /// batches (for resume tests) and is also useful for staged partial builds.
+    /// The check runs before loading each received batch, so `Some(0)` commits
+    /// nothing and a value `>=` the total number of batches finishes cleanly
+    /// (there is no next batch to interrupt before).
     pub interrupt_after_batches: Option<usize>,
 }
 
@@ -229,27 +232,37 @@ where
     // ── Decide fresh vs. resume ──────────────────────────────────────────────
     let existing = BuildCheckpoint::load_if_present(&cp_path)?;
     let graph_exists = graph_path.exists();
+    // A written manifest is the authoritative marker of a *complete* pack (the
+    // checkpoint is cleared on clean finish, but if a crash lands between the
+    // manifest write and that clear, a complete pack can still carry a sidecar).
+    let finished = graph_exists && manifest_path_in(pack_dir).exists();
 
-    let resume_from = match (&existing, options.resume) {
-        (Some(cp), true) if cp.params_hash == params_hash && graph_exists => Some(cp.clone()),
-        (Some(_), _) => {
-            // Params changed, resume not requested, or the store is gone:
-            // clean restart (wipe any partial store + the stale sidecar). Remove
-            // the store *before* clearing the sidecar so a failed wipe cannot
-            // leave an orphaned store with no checkpoint.
+    let resume_from = if let Some(cp) = &existing {
+        if options.resume && cp.params_hash == params_hash && graph_exists {
+            Some(cp.clone())
+        } else if finished {
+            // Never clobber a completed pack, even if a stale checkpoint survived
+            // its clean finish. The caller must remove it to rebuild.
+            return Err(PacksError::PackInstall(format!(
+                "pack already built at {} (remove it to rebuild)",
+                pack_dir.display()
+            )));
+        } else {
+            // Partial build with a stale/mismatched checkpoint: clean restart.
+            // Remove the store *before* clearing the sidecar so a failed wipe
+            // cannot leave an orphaned store with no checkpoint.
             remove_store(&graph_path)?;
             BuildCheckpoint::clear(&cp_path)?;
             None
         }
-        (None, _) => {
-            if graph_exists {
-                return Err(PacksError::PackInstall(format!(
-                    "graph store already exists at {} (no checkpoint to resume; remove it to rebuild)",
-                    graph_path.display()
-                )));
-            }
-            None
+    } else {
+        if graph_exists {
+            return Err(PacksError::PackInstall(format!(
+                "graph store already exists at {} (no checkpoint to resume; remove it to rebuild)",
+                graph_path.display()
+            )));
         }
+        None
     };
 
     // ── Open the store and establish starting state ──────────────────────────
@@ -280,23 +293,15 @@ where
         None => {
             std::fs::create_dir_all(pack_dir)?;
             db = Database::open_with_options(&graph_path, bulk_rw_options())?;
-            {
-                let conn = db.connect()?;
-                for ddl in cve_schema_ddl(options.embedding_dim) {
-                    conn.run(&ddl)?;
-                }
+            // On any failure while initializing a fresh store, remove the partial
+            // store so it is never left as an un-resumable orphan (a graph with
+            // no checkpoint).
+            if let Err(err) = init_fresh_store(&db, options.embedding_dim, &cp_path, &params_hash) {
+                db.close();
+                let _ = remove_store(&graph_path);
+                let _ = BuildCheckpoint::clear(&cp_path);
+                return Err(err);
             }
-            // Write the checkpoint up front (before the first batch) so that even
-            // a crash after the very first batch commits — but before its own
-            // checkpoint write — still leaves a resumable sidecar next to the
-            // store instead of an orphaned, un-resumable graph.
-            BuildCheckpoint {
-                params_hash: params_hash.clone(),
-                last_committed_batch: 0,
-                source_offset: 0,
-                counts: BuildCounts::default(),
-            }
-            .save(&cp_path)?;
             loaded = HashSet::new();
             entities_seen = HashSet::new();
             counts = BuildCounts::default();
@@ -457,6 +462,33 @@ fn bulk_rw_options() -> DatabaseOptions {
         auto_checkpoint: Some(false),
         ..DatabaseOptions::default()
     }
+}
+
+/// Apply the CVE schema to a fresh store and write the up-front checkpoint.
+///
+/// The checkpoint is written *after* the schema so a resume can safely skip
+/// schema creation, and *before* the first batch so that even a crash right
+/// after the first batch commits leaves a resumable sidecar rather than an
+/// orphaned, un-resumable graph.
+fn init_fresh_store(
+    db: &Database,
+    embedding_dim: usize,
+    cp_path: &Path,
+    params_hash: &str,
+) -> Result<()> {
+    {
+        let conn = db.connect()?;
+        for ddl in cve_schema_ddl(embedding_dim) {
+            conn.run(&ddl)?;
+        }
+    }
+    BuildCheckpoint {
+        params_hash: params_hash.to_string(),
+        last_committed_batch: 0,
+        source_offset: 0,
+        counts: BuildCounts::default(),
+    }
+    .save(cp_path)
 }
 
 /// Load every not-yet-loaded record of `batch` into the store as a single
@@ -755,5 +787,26 @@ mod tests {
         assert_eq!(ddl.len(), 4);
         assert!(ddl[0].contains("embedding DOUBLE[768]"));
         assert!(ddl[2].contains("HAS_ENTITY"));
+    }
+
+    #[test]
+    fn content_fingerprint_binds_corpus_content() {
+        // Same bytes -> same fingerprint; any change -> different fingerprint,
+        // so a src that embeds it makes a changed corpus a params-hash mismatch.
+        let a = crate::content_fingerprint(b"[{\"id\":\"CVE-2025-0001\"}]");
+        let b = crate::content_fingerprint(b"[{\"id\":\"CVE-2025-0001\"}]");
+        let c = crate::content_fingerprint(b"[{\"id\":\"CVE-2025-0002\"}]");
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert_eq!(a.len(), 64);
+
+        let with = |src: &str| BuildParams {
+            src: src.into(),
+            ..BuildParams::default()
+        };
+        assert_ne!(
+            with(&format!("corpus.json#sha256:{a}")).params_hash(),
+            with(&format!("corpus.json#sha256:{c}")).params_hash(),
+        );
     }
 }

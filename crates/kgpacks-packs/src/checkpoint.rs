@@ -9,8 +9,10 @@
 //! * `last_committed_batch` — number of batches fully loaded and committed.
 //! * `source_offset` — how many corpus records have been consumed (the resume
 //!   cursor into the [`crate::CorpusSource`]).
-//! * `counts` — running node/relationship totals, so the resumed run reports
-//!   cumulative stats without re-counting.
+//! * `counts` — running node/relationship totals recorded as progress. A resume
+//!   does not trust these for correctness: it re-reads authoritative counts from
+//!   the store (in case the process died after a batch committed but before its
+//!   checkpoint was written), and the finished manifest always uses live counts.
 //!
 //! The sidecar is written **atomically** (temp file + rename) after each batch,
 //! so a crash mid-write never leaves a torn checkpoint, and is removed on a clean
