@@ -1,15 +1,17 @@
-//! A small, self-contained SHA-256 implementation.
+//! Self-contained SHA-256 (FIPS 180-4), no external crypto dependency.
 //!
-//! Used only to derive a stable `params_hash` for the build checkpoint (see
-//! [`crate::cve_build::BuildParams::params_hash`]). A dependency-free, fully
-//! specified digest keeps the hash **stable across Rust versions and platforms**
-//! (unlike `std::hash::DefaultHasher`, whose output is unspecified) without
-//! pulling a crypto crate into the workspace. This is a content-identity hash,
-//! not a security primitive.
+//! The multi-part release index ([`crate::release`]) needs a per-part and an
+//! overall content hash that is stable across languages and machines, and that
+//! `pack pull` can re-verify. Rather than pull in a crypto crate (and its build
+//! graph / lockfile churn), this ports the standard algorithm directly — the
+//! same "no external dependency" stance the crate already takes for SemVer in
+//! [`crate::versioning`].
 //!
-//! Implements FIPS 180-4 SHA-256 and is checked against the standard test
-//! vectors (empty string, `"abc"`, and the 56-byte multi-block message).
+//! Correctness is pinned to the FIPS 180-4 example vectors plus the canonical
+//! empty-string and `abc` digests in the unit tests below.
 
+/// First 32 bits of the fractional parts of the cube roots of the first 64
+/// primes (the SHA-256 round constants).
 const K: [u32; 64] = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -21,29 +23,120 @@ const K: [u32; 64] = [
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ];
 
+/// Initial hash value: first 32 bits of the fractional parts of the square
+/// roots of the first eight primes.
 const H0: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ];
 
-/// Compute the SHA-256 digest of `data`, returned as 32 raw bytes.
-pub fn digest(data: &[u8]) -> [u8; 32] {
-    let mut h = H0;
+/// Streaming SHA-256 hasher.
+///
+/// Feed bytes with [`Sha256::update`] (any number of calls, any chunk sizes)
+/// and finish with [`Sha256::finalize`] / [`Sha256::finalize_hex`].
+#[derive(Debug, Clone)]
+pub struct Sha256 {
+    state: [u32; 8],
+    /// Partially-filled 64-byte block.
+    buffer: [u8; 64],
+    /// Bytes currently held in `buffer` (`0..64`).
+    buffer_len: usize,
+    /// Total message length in bytes (for the length padding).
+    total_len: u64,
+}
 
-    // Pre-processing: append 0x80, then zero padding, then the 64-bit big-endian
-    // bit length, so the total length is a multiple of 64 bytes.
-    let bit_len = (data.len() as u64).wrapping_mul(8);
-    let mut message = data.to_vec();
-    message.push(0x80);
-    while message.len() % 64 != 56 {
-        message.push(0);
+impl Default for Sha256 {
+    fn default() -> Self {
+        Self::new()
     }
-    message.extend_from_slice(&bit_len.to_be_bytes());
+}
 
-    for block in message.chunks_exact(64) {
+impl Sha256 {
+    /// A fresh hasher over the empty message.
+    pub fn new() -> Self {
+        Self {
+            state: H0,
+            buffer: [0u8; 64],
+            buffer_len: 0,
+            total_len: 0,
+        }
+    }
+
+    /// Absorb `data` into the running digest.
+    pub fn update(&mut self, data: &[u8]) {
+        self.total_len = self.total_len.wrapping_add(data.len() as u64);
+        let mut data = data;
+
+        // Top up a partially-filled block first.
+        if self.buffer_len > 0 {
+            let need = 64 - self.buffer_len;
+            let take = need.min(data.len());
+            self.buffer[self.buffer_len..self.buffer_len + take].copy_from_slice(&data[..take]);
+            self.buffer_len += take;
+            data = &data[take..];
+            if self.buffer_len == 64 {
+                let block = self.buffer;
+                self.process_block(&block);
+                self.buffer_len = 0;
+            }
+        }
+
+        // Process whole blocks straight from the input.
+        while data.len() >= 64 {
+            let mut block = [0u8; 64];
+            block.copy_from_slice(&data[..64]);
+            self.process_block(&block);
+            data = &data[64..];
+        }
+
+        // Stash the remainder.
+        if !data.is_empty() {
+            self.buffer[..data.len()].copy_from_slice(data);
+            self.buffer_len = data.len();
+        }
+    }
+
+    /// Consume the hasher and return the 32-byte digest.
+    pub fn finalize(mut self) -> [u8; 32] {
+        // Message length in bits, captured before padding is appended.
+        let bit_len = self.total_len.wrapping_mul(8);
+
+        // Append 0x80 then zeros until the block has 8 bytes left for the length.
+        let mut pad = [0u8; 72];
+        pad[0] = 0x80;
+        let rem = (self.buffer_len + 1) % 64;
+        let zero_pad = if rem <= 56 { 56 - rem } else { 120 - rem };
+        self.update_no_len(&pad[..1 + zero_pad]);
+        self.update_no_len(&bit_len.to_be_bytes());
+        debug_assert_eq!(
+            self.buffer_len, 0,
+            "message not block-aligned after padding"
+        );
+
+        let mut out = [0u8; 32];
+        for (i, word) in self.state.iter().enumerate() {
+            out[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
+        }
+        out
+    }
+
+    /// Consume the hasher and return the lowercase hex digest.
+    pub fn finalize_hex(self) -> String {
+        to_hex(&self.finalize())
+    }
+
+    /// Like [`update`](Self::update) but does not advance the tracked message
+    /// length — used internally to feed padding without corrupting the length
+    /// field that padding itself encodes.
+    fn update_no_len(&mut self, data: &[u8]) {
+        let saved = self.total_len;
+        self.update(data);
+        self.total_len = saved;
+    }
+
+    fn process_block(&mut self, block: &[u8; 64]) {
         let mut w = [0u32; 64];
-        for (i, word) in w.iter_mut().take(16).enumerate() {
-            let j = i * 4;
-            *word = u32::from_be_bytes([block[j], block[j + 1], block[j + 2], block[j + 3]]);
+        for (i, chunk) in block.chunks_exact(4).enumerate() {
+            w[i] = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
         }
         for i in 16..64 {
             let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
@@ -54,11 +147,11 @@ pub fn digest(data: &[u8]) -> [u8; 32] {
                 .wrapping_add(s1);
         }
 
-        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh] = h;
+        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = self.state;
         for i in 0..64 {
             let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
             let ch = (e & f) ^ ((!e) & g);
-            let t1 = hh
+            let t1 = h
                 .wrapping_add(s1)
                 .wrapping_add(ch)
                 .wrapping_add(K[i])
@@ -66,7 +159,7 @@ pub fn digest(data: &[u8]) -> [u8; 32] {
             let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
             let maj = (a & b) ^ (a & c) ^ (b & c);
             let t2 = s0.wrapping_add(maj);
-            hh = g;
+            h = g;
             g = f;
             f = e;
             e = d.wrapping_add(t1);
@@ -76,31 +169,33 @@ pub fn digest(data: &[u8]) -> [u8; 32] {
             a = t1.wrapping_add(t2);
         }
 
-        h[0] = h[0].wrapping_add(a);
-        h[1] = h[1].wrapping_add(b);
-        h[2] = h[2].wrapping_add(c);
-        h[3] = h[3].wrapping_add(d);
-        h[4] = h[4].wrapping_add(e);
-        h[5] = h[5].wrapping_add(f);
-        h[6] = h[6].wrapping_add(g);
-        h[7] = h[7].wrapping_add(hh);
+        self.state[0] = self.state[0].wrapping_add(a);
+        self.state[1] = self.state[1].wrapping_add(b);
+        self.state[2] = self.state[2].wrapping_add(c);
+        self.state[3] = self.state[3].wrapping_add(d);
+        self.state[4] = self.state[4].wrapping_add(e);
+        self.state[5] = self.state[5].wrapping_add(f);
+        self.state[6] = self.state[6].wrapping_add(g);
+        self.state[7] = self.state[7].wrapping_add(h);
     }
+}
 
-    let mut out = [0u8; 32];
-    for (i, word) in h.iter().enumerate() {
-        out[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
+/// Lowercase hex encoding of `bytes`.
+fn to_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
     }
     out
 }
 
-/// Compute the SHA-256 digest of `data` as a lowercase hex string.
-pub fn hex_digest(data: &[u8]) -> String {
-    let mut s = String::with_capacity(64);
-    for byte in digest(data) {
-        s.push(char::from_digit((byte >> 4) as u32, 16).expect("nibble"));
-        s.push(char::from_digit((byte & 0x0f) as u32, 16).expect("nibble"));
-    }
-    s
+/// One-shot lowercase-hex SHA-256 digest of `bytes`.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    let mut h = Sha256::new();
+    h.update(bytes);
+    h.finalize_hex()
 }
 
 #[cfg(test)]
@@ -108,33 +203,68 @@ mod tests {
     use super::*;
 
     #[test]
-    fn matches_known_vectors() {
-        // FIPS 180-4 / NIST published SHA-256 test vectors.
+    fn empty_string_vector() {
         assert_eq!(
-            hex_digest(b""),
+            sha256_hex(b""),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
+    }
+
+    #[test]
+    fn abc_vector() {
         assert_eq!(
-            hex_digest(b"abc"),
+            sha256_hex(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+
+    #[test]
+    fn two_block_vector() {
+        // 56 bytes -> forces padding into a second block (FIPS 180-4 example 2).
         assert_eq!(
-            hex_digest(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
+            sha256_hex(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
             "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
         );
     }
 
     #[test]
-    fn hash_is_sensitive_to_a_single_bit() {
-        assert_ne!(hex_digest(b"cve"), hex_digest(b"cvf"));
+    fn streaming_matches_oneshot() {
+        // Splitting the input across arbitrary update() boundaries must not
+        // change the digest — the buffering path has to be block-correct.
+        let data: Vec<u8> = (0u32..1000).map(|i| (i % 251) as u8).collect();
+        let oneshot = sha256_hex(&data);
+
+        let mut h = Sha256::new();
+        for chunk in data.chunks(7) {
+            h.update(chunk);
+        }
+        assert_eq!(h.finalize_hex(), oneshot);
+
+        let mut h2 = Sha256::new();
+        h2.update(&data[..1]);
+        h2.update(&data[1..64]);
+        h2.update(&data[64..65]);
+        h2.update(&data[65..]);
+        assert_eq!(h2.finalize_hex(), oneshot);
     }
 
     #[test]
-    fn hex_is_64_lowercase_chars() {
-        let h = hex_digest(b"anything");
-        assert_eq!(h.len(), 64);
-        assert!(h
-            .chars()
-            .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
+    fn exactly_one_block() {
+        // 64-byte message: the length padding must spill into a fresh block.
+        let data = [0x61u8; 64];
+        assert_eq!(
+            sha256_hex(&data),
+            "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb"
+        );
+    }
+
+    #[test]
+    fn million_a_vector() {
+        // FIPS 180-4: one million 'a' bytes.
+        let data = vec![b'a'; 1_000_000];
+        assert_eq!(
+            sha256_hex(&data),
+            "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
+        );
     }
 }

@@ -1,0 +1,48 @@
+name: packs-dir-precedence
+description: >-
+  Outside-in behavioural check for the WS4 packs-directory resolution (issue
+  #19) driven through the REAL `kgpacks` binary. The `status` command reports the
+  resolved directory in its `packsDir` field, so the committed harness
+  (qa/packs-dir-precedence/verify.sh) asserts the full precedence matrix with the
+  resolution variables applied to the CHILD process only: the `--packs-dir` flag
+  beats `KGPACKS_PACKS_DIR`, which beats the XDG default
+  (`$XDG_DATA_HOME/kgpacks`, else `$HOME/.local/share/kgpacks`), and blank
+  (whitespace-only) overrides are treated as unset. Closes agent-kgpacks-rs #19.
+version: "1.0"
+config:
+  timeout: 900000
+environment:
+  requires:
+    - "cargo (Rust toolchain) available on PATH"
+    - "run from the agent-kgpacks-rs repo root"
+agents:
+  - name: cli
+    type: cli
+    config:
+      workingDirectory: "."
+metadata:
+  tags: [cli, packs, packs-dir, resolution, xdg, ws4, read-path]
+  priority: high
+steps:
+  - name: run packs-dir precedence resolution check
+    agent: cli
+    action: run
+    description: >-
+      Run the Rust `kgpacks status` under each resolution scenario (flag / env /
+      XDG default / HOME fallback / blank-override) and assert the reported
+      `packsDir` is the winning directory for that precedence level.
+    params:
+      command: "./qa/packs-dir-precedence/verify.sh"
+  - name: packs-dir resolution is correct
+    agent: cli
+    action: validate_output
+    description: The harness reports the full WS4 precedence matrix holds.
+    params:
+      text: "PACKS_DIR_PRECEDENCE_OK"
+  - name: harness exits cleanly
+    agent: cli
+    action: validate_exit_code
+    description: A non-zero exit would signal a resolution divergence.
+    params:
+      text: "0"
+assertions: []

@@ -100,7 +100,7 @@ impl BuildParams {
         fields.insert("year", serde_json::json!(self.year));
         let canonical =
             serde_json::to_string(&fields).expect("BTreeMap<&str, Value> always serializes");
-        crate::sha256::hex_digest(canonical.as_bytes())
+        crate::sha256::sha256_hex(canonical.as_bytes())
     }
 }
 

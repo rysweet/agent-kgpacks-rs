@@ -1,0 +1,56 @@
+name: release-plan-ts-parity
+description: >-
+  Outside-in cross-implementation parity check for the Rust offline release
+  planner (kgpacks-cli `pack release-plan`, over kgpacks-packs::plan_release /
+  pack_version_from_release_tag / build_release_provenance / publish_targets)
+  against the canonical agent-kgpacks-ts release tooling
+  (`scripts/release-pack.mjs` + `packages/packs/src/versioning.ts`
+  `packVersionFromReleaseTag`). Drives the committed harness
+  (qa/release-parity/verify.sh), which materializes a shared packs directory with
+  a `cve` pack carrying a full `provenance` block and diffs the Rust
+  `pack release-plan` payload against the live TypeScript reference oracle for a
+  dated tag (`cve-YYYY.MM[.N]` → unpadded SemVer core), overrides, and the bare
+  `packs` latest-pointer: the dated tag must derive the unpadded version, move
+  the stable `packs` pointer (so `pack pull` still resolves latest), and mirror
+  the manifest provenance into the release index. Closes the WS3 half of
+  agent-kgpacks-rs #18.
+version: "1.0"
+config:
+  timeout: 900000
+environment:
+  requires:
+    - "cargo (Rust toolchain) available on PATH"
+    - "node available on PATH (runs the TypeScript reference oracle)"
+    - "run from the agent-kgpacks-rs repo root"
+agents:
+  - name: cli
+    type: cli
+    config:
+      workingDirectory: "."
+metadata:
+  tags: [cli, parity, release, versioning, provenance, packs, ts-parity]
+  priority: high
+steps:
+  - name: run cross-implementation release-plan parity check
+    agent: cli
+    action: run
+    description: >-
+      Run the Rust `kgpacks pack release-plan` over a shared fixture packs
+      directory for a dated tag, overrides, and the `packs` pointer, and diff
+      each plan against the live agent-kgpacks-ts reference oracle plus the
+      concrete WS3 outcomes.
+    params:
+      command: "./qa/release-parity/verify.sh"
+  - name: release plans are at parity
+    agent: cli
+    action: validate_output
+    description: The harness reports structural parity with the TS reference.
+    params:
+      text: "RELEASE_PARITY_OK"
+  - name: harness exits cleanly
+    agent: cli
+    action: validate_exit_code
+    description: A non-zero exit would signal a release-plan divergence.
+    params:
+      text: "0"
+assertions: []

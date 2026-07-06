@@ -3,8 +3,9 @@
 //! Rust port of `@kgpacks/embeddings` (reference `bootstrap/src/embeddings`).
 //! Two responsibilities:
 //!
-//! * [`chunker`] — overlapping, sentence-aware text chunking
-//!   (`chunker.py`), used by the ingestion pipeline before embedding.
+//! * [`chunker`] — overlapping, fixed-window text chunking (parity with
+//!   `agent-kgpacks-ts` `packages/ingestion/src/chunking.ts`), used by the
+//!   ingestion pipeline before embedding.
 //! * [`Embedder`] / [`EmbeddingModel`] — embedding generation
 //!   (`generator.py`). The reference runs a `sentence-transformers` BGE model
 //!   (768-d, retrieval-optimized). Running a transformer in CI is neither

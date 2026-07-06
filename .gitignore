@@ -7,3 +7,19 @@ rustc-ice-*.txt
 # Editor / OS noise
 *.swp
 .DS_Store
+
+# Agent session / runtime artifacts — never commit these onto audit branches.
+.claude/runtime/
+.claude/**/runtime/
+
+# Secrets — never commit credentials or key material.
+.env
+.env.*
+*.pem
+*.key
+
+# gadugi-agentic-test runtime artifacts (qa/ parity harness runs)
+/logs/
+/outputs/
+/reports/
+/screenshots/

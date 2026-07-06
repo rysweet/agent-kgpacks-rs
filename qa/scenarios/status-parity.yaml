@@ -1,0 +1,49 @@
+name: status-ts-parity
+description: >-
+  Outside-in cross-implementation parity check for the Rust CLI `status` command
+  (kgpacks-cli) against the canonical agent-kgpacks-ts `status` command. Drives
+  the committed parity harness (qa/status-parity/verify.sh), which materializes a
+  shared packs directory (packs with/without a database store, an invalid
+  manifest, a manifest-less directory, and a stray file) and diffs the Rust
+  `kgpacks status` payload against the live TypeScript reference oracle plus a
+  path-independent golden: `{ packsDir, count, packs: [{ name, version,
+  dbPresent }] }`, packs sorted by name.
+version: "1.0"
+config:
+  timeout: 900000
+environment:
+  requires:
+    - "cargo (Rust toolchain) available on PATH"
+    - "node available on PATH (runs the TypeScript reference oracle)"
+    - "run from the agent-kgpacks-rs repo root"
+agents:
+  - name: cli
+    type: cli
+    config:
+      workingDirectory: "."
+metadata:
+  tags: [cli, parity, status, registry, ts-parity, read-path]
+  priority: high
+steps:
+  - name: run cross-implementation status parity check
+    agent: cli
+    action: run
+    description: >-
+      Run the Rust `kgpacks status` over a shared fixture packs directory and
+      diff it against the live agent-kgpacks-ts reference oracle and the expected
+      golden.
+    params:
+      command: "./qa/status-parity/verify.sh"
+  - name: status payload is at parity
+    agent: cli
+    action: validate_output
+    description: The harness reports structural parity with the TS reference.
+    params:
+      text: "STATUS_PARITY_OK"
+  - name: harness exits cleanly
+    agent: cli
+    action: validate_exit_code
+    description: A non-zero exit would signal a parity divergence.
+    params:
+      text: "0"
+assertions: []
