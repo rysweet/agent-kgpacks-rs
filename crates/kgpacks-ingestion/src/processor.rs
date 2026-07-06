@@ -8,6 +8,7 @@
 //! Embeddings are generated *and stored* (`Section.embedding` / `Chunk.embedding`
 //! arrays); the HNSW vector index over those columns is hybrid-retrieval (M4).
 
+use std::collections::HashSet;
 use std::sync::OnceLock;
 
 use kgpacks_db::{Connection, LogicalType, Value};
@@ -15,6 +16,7 @@ use kgpacks_embeddings::{chunk_sections, Chunk, EmbeddingModel};
 use regex::Regex;
 
 use crate::content::{Article, ContentSource, ParsedSection};
+use crate::entity_relations::EntityRelationRow;
 use crate::extraction::{ExtractionResult, Extractor};
 use crate::orchestrator::ProcessOutcome;
 use crate::util::now_ms;
@@ -391,19 +393,36 @@ impl<'a, 'db> ArticleProcessor<'a, 'db> {
             )?;
         }
 
-        for rel in &extraction.relationships {
-            let source_id = format!("{}|{}", article.title, rel.source);
-            let target_id = format!("{}|{}", article.title, rel.target);
-            self.conn.run_params(
-                CREATE_ENTITY_RELATION_CYPHER,
-                vec![
-                    ("source_id", Value::String(source_id)),
-                    ("target_id", Value::String(target_id)),
-                    ("relation", Value::String(rel.relation.clone())),
-                    ("context", Value::String(rel.context.clone())),
-                ],
-            )?;
-        }
+        // Bulk-load ENTITY_RELATION edges scalably instead of one round-trip per
+        // edge. Filter to rows whose BOTH endpoints were just created as Entity
+        // nodes (both source and target names appear in this article's extracted
+        // entities). This reproduces the old per-row `MATCH (e1), (e2) CREATE`
+        // loop's "silently drop a dangling endpoint" behavior — while replacing
+        // that comma two-pattern MATCH (an O(N²) self-hash-join over the growing
+        // Entity table) with the non-O(N²) bulk path, and keeping the `COPY`
+        // route (which errors on a dangling foreign key) safe. See
+        // [`crate::bulk_create_entity_relations`].
+        let created_entity_ids: HashSet<String> = extraction
+            .entities
+            .iter()
+            .map(|e| format!("{}|{}", article.title, e.name))
+            .collect();
+        let rel_rows: Vec<EntityRelationRow> = extraction
+            .relationships
+            .iter()
+            .filter_map(|rel| {
+                let source_id = format!("{}|{}", article.title, rel.source);
+                let target_id = format!("{}|{}", article.title, rel.target);
+                (created_entity_ids.contains(&source_id) && created_entity_ids.contains(&target_id))
+                    .then_some(EntityRelationRow {
+                        source_id,
+                        target_id,
+                        relation: rel.relation.clone(),
+                        context: rel.context.clone(),
+                    })
+            })
+            .collect();
+        crate::bulk_create_entity_relations(self.conn, &rel_rows)?;
         Ok(())
     }
 }

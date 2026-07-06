@@ -21,6 +21,7 @@
 //! the HNSW vector index over them is hybrid retrieval (M4).
 
 pub mod content;
+pub mod entity_relations;
 pub mod error;
 pub mod extraction;
 pub mod link_discovery;
@@ -32,6 +33,9 @@ pub mod work_queue;
 mod util;
 
 pub use content::{Article, ContentSource, MapContentSource, ParsedSection};
+pub use entity_relations::{
+    bulk_create_entity_relations, create_entity_relations_batched, EntityRelationRow,
+};
 pub use error::{IngestionError, Result};
 pub use extraction::{
     build_extraction_prompt, detect_domain, normalize_relation, parse_extraction_response,

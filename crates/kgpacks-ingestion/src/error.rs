@@ -26,6 +26,10 @@ pub enum IngestionError {
     /// An error from batch embedding generation.
     #[error(transparent)]
     Embedding(#[from] kgpacks_embeddings::EmbeddingError),
+
+    /// An I/O error while staging a bulk-load CSV for `COPY ENTITY_RELATION`.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
 }
 
 /// Convenience result alias for fallible ingestion operations.

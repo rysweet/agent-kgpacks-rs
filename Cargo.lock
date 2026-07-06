@@ -940,6 +940,7 @@ dependencies = [
  "kgpacks-db",
  "kgpacks-embeddings",
  "kgpacks-query",
+ "serde_json",
 ]
 
 [[package]]

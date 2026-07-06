@@ -1,0 +1,52 @@
+name: ws8-entity-graph
+description: >-
+  WS8 acceptance coverage for the scalable ENTITY_RELATION bulk load + the
+  entity-graph traversal (query + backend API). Drives the committed harness
+  (qa/ws8-entity-graph/verify.sh), which runs the WS8 test subset: the
+  transport-agnostic entity_graph over Entity / HAS_ENTITY / ENTITY_RELATION
+  (co-occurrence depth 1/2, type filter, auto-mode selection, relation
+  traversal, deterministic ordering, limit, strict depth validation, unknown
+  seed), the COPY-first bulk ENTITY_RELATION loader and its PK-indexed UNWIND
+  fallback (correctness, CSV round-trip, non-empty append, empty no-op,
+  dangling-endpoint robustness, a 5,000-edge batch), and the backend
+  GET /api/v1/graph/entities route/service (valid neighborhood; unknown seed ->
+  404; missing entity -> 400 MISSING_PARAMETER; out-of-range depth -> 400
+  INVALID_PARAMETER; depth/limit honored).
+version: "1.0"
+config:
+  timeout: 900000
+environment:
+  requires:
+    - "cargo (Rust toolchain) available on PATH"
+    - "run from the agent-kgpacks-rs repo root"
+agents:
+  - name: cli
+    type: cli
+    config:
+      workingDirectory: "."
+metadata:
+  tags: [ci, coverage, query, ingestion, backend, entity-graph, ws8]
+  priority: high
+steps:
+  - name: run WS8 entity-graph + bulk-load coverage
+    agent: cli
+    action: run
+    description: >-
+      Run the WS8 test subset (entity_graph traversal, scalable bulk
+      ENTITY_RELATION load, and the backend graph-entities API) via the
+      committed harness.
+    params:
+      command: "./qa/ws8-entity-graph/verify.sh"
+  - name: WS8 coverage passes
+    agent: cli
+    action: validate_output
+    description: The harness reports the WS8 coverage passed.
+    params:
+      text: "WS8_COVERAGE_OK"
+  - name: harness exits cleanly
+    agent: cli
+    action: validate_exit_code
+    description: A non-zero exit would signal a WS8 coverage failure.
+    params:
+      text: "0"
+assertions: []
