@@ -300,6 +300,31 @@ fn pack_release_filename_is_name_scoped() {
     assert_eq!(pack_release_filename("cve"), "cve.pack-release.json");
 }
 
+#[test]
+fn plan_release_keys_the_index_filename_off_the_directory_not_the_manifest_name() {
+    // The release tooling writes `<dir>.pack-release.json` (the `--pack` arg),
+    // while the plan/index `name` field carries the manifest name — they differ
+    // when the pack directory is renamed.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let pack_dir = tmp.path().join("cve-corpus");
+    std::fs::create_dir_all(&pack_dir).unwrap();
+    std::fs::write(
+        pack_dir.join("manifest.json"),
+        r#"{"name":"cve","version":"3.2.1","provenance":{"build":{"date":"2026-01-02T00:00:00Z"}}}"#,
+    )
+    .unwrap();
+
+    let plan = plan_release(
+        &pack_dir,
+        "cve-2025.06",
+        &ProvenanceOverrides::default(),
+        "IGNORED",
+    )
+    .expect("plan");
+    assert_eq!(plan.name, "cve");
+    assert_eq!(plan.index_filename, "cve-corpus.pack-release.json");
+}
+
 // --- ISO-8601 timestamp helper (dependency-free `build.date`/`createdAt`). ----
 
 #[test]

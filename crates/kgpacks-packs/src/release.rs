@@ -456,13 +456,27 @@ impl ReleasePlan {
 /// Reads + validates the pack's `manifest.json` only (no graph store, no
 /// network): resolves the (dated) version, mirrors provenance, and computes the
 /// publish targets. `now_iso` defaults a missing `provenance.build.date`.
+///
+/// The `<name>.pack-release.json` `index_filename` is keyed off the pack
+/// **directory** name (the `--pack` arg), matching `release-pack.mjs`, which
+/// writes the index + part assets under that name; the plan/index `name` field
+/// carries the manifest name. The two coincide when the pack directory is named
+/// after its manifest, but a renamed directory keeps the on-disk asset names
+/// stable.
 pub fn plan_release(
     pack_dir: impl AsRef<Path>,
     tag: &str,
     overrides: &ProvenanceOverrides,
     now_iso: &str,
 ) -> Result<ReleasePlan> {
+    let pack_dir = pack_dir.as_ref();
     let manifest = load_manifest_from_dir(pack_dir)?;
+    // The pack directory name is the `--pack` arg the release tooling keys asset
+    // filenames off; fall back to the manifest name for an unnameable path.
+    let asset_name = pack_dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| manifest.name.clone());
     Ok(ReleasePlan {
         name: manifest.name.clone(),
         tag: tag.to_string(),
@@ -470,7 +484,7 @@ pub fn plan_release(
         model: resolve_model(&manifest, overrides),
         provenance: build_release_provenance(&manifest, overrides, now_iso),
         publish_targets: publish_targets(tag),
-        index_filename: pack_release_filename(&manifest.name),
+        index_filename: pack_release_filename(&asset_name),
     })
 }
 

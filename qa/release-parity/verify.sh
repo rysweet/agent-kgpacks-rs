@@ -61,16 +61,26 @@ cat > "$FIX/cve/manifest.json" <<'JSON'
 }
 JSON
 
-# Prebuild once so the per-case `cargo run` invocations are fast and quiet.
+# A pack whose DIRECTORY name differs from its manifest `name`: the release
+# tooling keys asset filenames off the directory (the `--pack` arg), while the
+# index `name` field carries the manifest name. Exercises that divergence.
+mkdir -p "$FIX/cve-corpus"
+cat > "$FIX/cve-corpus/manifest.json" <<'JSON'
+{
+  "name": "cve",
+  "version": "3.2.1",
+  "provenance": { "build": { "date": "2026-01-02T00:00:00Z" } }
+}
+JSON
 cargo build -q -p kgpacks-cli --locked
 
 run_case() {
-  # run_case <label> <tag> [model] [corpus-commit] [corpus-date]
-  local label="$1" tag="$2" model="${3:-}" commit="${4:-}" cdate="${5:-}"
+  # run_case <label> <pack> <tag> [model] [corpus-commit] [corpus-date]
+  local label="$1" pack="$2" tag="$3" model="${4:-}" commit="${5:-}" cdate="${6:-}"
   local rs="$WORK/$label.rs.json" ts="$WORK/$label.ts.json"
 
-  local rs_args=(pack release-plan cve --packs-dir "$FIX" --tag "$tag")
-  local ts_args=("$FIX" cve "$tag")
+  local rs_args=(pack release-plan "$pack" --packs-dir "$FIX" --tag "$tag")
+  local ts_args=("$FIX" "$pack" "$tag")
   if [ -n "$model" ]; then rs_args+=(--model "$model"); ts_args+=("$model"); else ts_args+=(""); fi
   if [ -n "$commit" ]; then rs_args+=(--corpus-commit "$commit"); ts_args+=("$commit"); else ts_args+=(""); fi
   if [ -n "$cdate" ]; then rs_args+=(--corpus-date "$cdate"); ts_args+=("$cdate"); fi
@@ -100,7 +110,7 @@ assert_contains() {
 }
 
 # --- Case 1: dated tag → unpadded version + latest-pointer + mirrored prov. ---
-DATED="$(run_case dated "cve-2025.06")"
+DATED="$(run_case dated cve "cve-2025.06")"
 assert_contains "$DATED" '"version": "2025.6.0"' "dated tag must derive UNPADDED version 2025.6.0"
 assert_contains "$DATED" '"cve-2025.06"' "dated tag must appear in publishTargets"
 assert_contains "$DATED" '"packs"' "publishTargets must include the packs latest-pointer"
@@ -108,16 +118,21 @@ assert_contains "$DATED" '"cve.pack-release.json"' "indexFilename must be <name>
 assert_contains "$DATED" '"commit": "abc123"' "provenance must be mirrored from the manifest"
 
 # --- Case 2: dated tag with an explicit patch. -------------------------------
-run_case dated_patch "cve-2024.12.3" >/dev/null
+run_case dated_patch cve "cve-2024.12.3" >/dev/null
 
 # --- Case 3: overrides fill corpus commit/date and the top-level model. ------
-OVR="$(run_case overrides "cve-2027.03" "custom/model" "deadbeef" "2027-03-01")"
+OVR="$(run_case overrides cve "cve-2027.03" "custom/model" "deadbeef" "2027-03-01")"
 assert_contains "$OVR" '"version": "2027.3.0"' "override case must still derive the dated version"
 
 # --- Case 4: bare packs pointer → no dated version (manifest fallback). -------
-POINTER="$(run_case pointer "packs")"
+POINTER="$(run_case pointer cve "packs")"
 assert_contains "$POINTER" '"version": "0.1.0"' "the packs pointer must fall back to the manifest version"
 assert_contains "$POINTER" '"publishTargets": [' "publishTargets present for the pointer"
+
+# --- Case 5: directory name ≠ manifest name → asset filename keys off the dir. -
+RENAMED="$(run_case renamed cve-corpus "cve-2025.06")"
+assert_contains "$RENAMED" '"indexFilename": "cve-corpus.pack-release.json"' "indexFilename must key off the pack directory name"
+assert_contains "$RENAMED" '"name": "cve"' "the plan name field must carry the manifest name"
 
 echo "checked Rust pack release-plan == agent-kgpacks-ts reference oracle == expected WS3 outcomes"
 echo "RELEASE_PARITY_OK"

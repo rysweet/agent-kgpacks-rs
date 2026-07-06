@@ -124,7 +124,7 @@ function releasePlan(packsDir, pack, tag, model, corpusCommit, corpusDate) {
     model: resolveModel(manifest, model) ?? null,
     provenance: buildProvenance(manifest, { model, corpusCommit, corpusDate, nowIso }),
     publishTargets: publishTargets(tag),
-    indexFilename: `${manifest.name}.pack-release.json`,
+    indexFilename: `${pack}.pack-release.json`,
   };
 }
 
