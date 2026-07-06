@@ -38,3 +38,20 @@ Runtime output (`outputs/`, `reports/`, `logs/`) is git-ignored.
 > to the cross-implementation **parity harness** (driven by the `qa/<name>/verify.sh`
 > oracles); see the main [README](../README.md). They require their own Node oracle
 > setup and are not part of the `fetch-cve-corpus` scenarios above.
+
+## WS1 CVE eval scenarios (issue #16)
+
+`gadugi-test` scenarios that exercise the WS1 CVE eval surface (`kgpacks-eval`)
+through the command surface. Each command is `cd`-anchored to the repo root, so the
+scenarios pass whether run from the repo root or from `qa/`. Run them with:
+
+```bash
+gadugi-test validate -d qa/scenarios
+gadugi-test run -d qa/scenarios
+```
+
+| Scenario                          | Validates                                                        |
+| --------------------------------- | ---------------------------------------------------------------- |
+| `eval-question-schema.yaml`       | The committed CVE eval questions meet the schema acceptance.     |
+| `full-pack-eval-recall.yaml`      | Full-pack (unsampled) recall@k matches the committed artifact.   |
+| `eval-harness-offline-suite.yaml` | The whole `kgpacks-eval` harness passes offline.                 |

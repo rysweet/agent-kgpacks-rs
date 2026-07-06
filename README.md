@@ -683,6 +683,42 @@ kgpacks --packs-dir ./packs pack pull rust-expert --no-verify
 | Pull-time policy + mutually-exclusive flags            | `signing::{signature_plan, validate_signature_flags}` | `signing` unit tests, `cli/tests/pack_pull.rs`          |
 | `pack pull` verify path (fail-closed)                  | `kgpacks-cli` (`pack pull`)                           | `cli/tests/pack_pull.rs`                                |
 
+## Evaluation harness + CVE pack eval (WS1)
+
+`kgpacks-eval` ports the question-loading and full-pack evaluation surface of
+`@kgpacks/eval`:
+
+- **Question loader.** `DirQuestionLoader` is a path-confined loader
+  (`createDirQuestionLoader` parity) that reads a pack's questions from
+  `data/packs/<pack>/eval_questions.json` and normalises each entry into an
+  `EvalQuestion` (stamping `pack_id`). All file access is confined to the base
+  directory: `pack_id` is validated against the pack-name grammar (rejecting
+  `..`, path separators, absolute paths and NUL) and the resolved path is
+  re-checked for containment.
+- **Full-pack vs. stratified sampling.** `SampleMode::Full` evaluates the whole
+  question set (the WS1 full-pack validation path); `SampleMode::Stratified`
+  deterministically bounds cost by taking a few questions per pack.
+- **Runner + metrics.** `run_eval` runs both arms (`with-pack` retrieve+synthesize
+  and `training-only` closed-book) over the sampled questions, grades each answer
+  with an injectable `Judge`, and aggregates per-arm `accuracy` / `mean_score` and
+  the `delta_accuracy` comparison. The `Arm`/`Judge` seams are injectable, so the
+  suite runs offline against mocks.
+- **Deterministic retrieval-recall fallback.** When no pinned judge/synthesis
+  transport is available (the offline/CI case), `recall_at_k` provides an
+  LLM-free hit@k sanity check: it confirms each CVE question is discriminable
+  against the other CVE records by embedding similarity (a lower-bound proxy for
+  the retrieval half of the with-pack arm), rather than standing in for real pack
+  ingestion/retrieval or the LLM-judged comparison.
+
+The committed CVE eval set lives at
+[`data/packs/cve/eval_questions.json`](data/packs/cve/eval_questions.json) (14
+questions; 12 real, recent 2024/2025 CVEs with reference answers). The committed
+eval artifact — [`data/packs/cve/eval-results.md`](data/packs/cve/eval-results.md)
+and [`eval-results.json`](data/packs/cve/eval-results.json) — records the
+deterministic recall@{1,3,5} numbers and documents the no-transport blocker.
+`cargo test -p kgpacks-eval --test full_pack_eval` recomputes recall from the
+committed questions and guards the artifact against drift.
+
 ## License
 
 [MIT](LICENSE).

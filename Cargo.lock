@@ -992,6 +992,9 @@ dependencies = [
  "kgpacks-embeddings",
  "kgpacks-packs",
  "kgpacks-query",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

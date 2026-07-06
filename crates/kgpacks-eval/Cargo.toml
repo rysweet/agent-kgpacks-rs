@@ -11,7 +11,10 @@ description = "Evaluation harness (baselines, judge, metrics) for agent-kgpacks-
 kgpacks-query = { workspace = true }
 kgpacks-agent = { workspace = true }
 kgpacks-packs = { workspace = true }
+kgpacks-embeddings = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 kgpacks-db = { workspace = true }
-kgpacks-embeddings = { workspace = true }
+tempfile = { workspace = true }
