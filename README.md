@@ -17,7 +17,8 @@ engine, RustyClawd / Copilot SDK for the agent).
 > seam, wired to the real RustyClawd / Copilot backend behind the `copilot`
 > feature. `kgpacks-query` adds the agent-grounded **graph-RAG query**
 > (`retrieve_and_synthesize`), and `kgpacks-cli` surfaces it end to end: `query`
-> prints ranked retrieval and `ask` prints a grounded, citation-bearing answer.
+> prints ranked retrieval, `ask` prints a grounded, citation-bearing answer, and
+> `status` reports the installed packs.
 > See the [roadmap](#porting-roadmap-m1m5) for what lands when.
 
 ## Target flow
@@ -53,6 +54,7 @@ under [`crates/`](crates/) and share versioning through the root
 | `kgpacks-agent`      | `@kgpacks/agent`     | Graph-RAG agent over the Copilot SDK / RustyClawd.           |
 | `kgpacks-query`      | `@kgpacks/query`     | Hybrid retrieval, reranking and cypher-RAG.                   |
 | `kgpacks-ingestion`  | `@kgpacks/ingestion` | Fetch / chunk / extract / embed ingestion pipeline.          |
+| `kgpacks-corpus`     | `scripts/cve-corpus` | SSRF-guarded CVE-corpus acquisition (CVEProject/cvelistV5).   |
 | `kgpacks-eval`       | `@kgpacks/eval`      | Evaluation harness (baselines, judge, metrics).              |
 | `kgpacks-mcp`        | `@kgpacks/mcp`       | Model Context Protocol server exposing pack queries.         |
 | `kgpacks-backend`    | `@kgpacks/backend`   | HTTP API surface (query / SSE).                              |
@@ -88,7 +90,8 @@ workspace. As of M2, `kgpacks-db` consumes `lbug`; the others remain stubs.
   manifest schema + SemVer versioning and builds/loads a pack over the graph
   store. Vector/FTS indexing is deferred to M4.
 - **M3 — Ingestion + embeddings (landed).** `kgpacks-embeddings` ports the
-  sentence-aware chunker and an embedding generator (a deterministic,
+  fixed-window chunker (chunk size/overlap, id format, and windowing at parity
+  with `agent-kgpacks-ts`) and an embedding generator (a deterministic,
   retrieval-contract-preserving model standing in for the BGE transformer so CI
   stays hermetic), and `kgpacks-ingestion` ports the working-store schema,
   pluggable content sources, LLM-extraction sanitization (gated behind a
@@ -110,10 +113,25 @@ workspace. As of M2, `kgpacks-db` consumes `lbug`; the others remain stubs.
   all behind an injectable `Transport` seam, with the real RustyClawd /
   Copilot-SDK adapter behind the `copilot` feature. `kgpacks-query` adds the
   agent-grounded graph-RAG query `retrieve_and_synthesize` (retrieval → grounded
-  synthesis), and `kgpacks-cli` surfaces the flow (`query` / `ask`). The broader
+  synthesis), and `kgpacks-cli` surfaces the flow (`query` / `ask`) plus the
+  read-path `status` command (installed-pack summary) and the read-path `pack`
+  subcommands (`list` / `info` / `validate`). The broader
   retrieval ENHANCEMENTS layer (cross-encoder, few-shot, Cypher-RAG, multi-doc
   synthesis), the `kgpacks-mcp` / `kgpacks-backend` HTTP surfaces, and the
   `parity/` harness remain follow-ups beyond this core flow.
+
+## External services
+
+- **CVE corpus (CVEProject/cvelistV5).** `kgpacks-corpus` (the `kgpacks
+  fetch-cve-corpus` command) acquires the CVE Record Format 5.1 corpus from the
+  external CVEProject/cvelistV5 GitHub release service — resolving a release, selecting
+  the baseline/delta asset, SSRF-guarded stream-downloading it (byte cap + timeout +
+  per-hop redirect re-validation against a GitHub host allowlist), double-unzipping it,
+  and recording provenance (release **tag → `--corpus-commit`**, **date →
+  `--corpus-date`**). The parity-critical selection/validation/provenance logic is pure
+  and unit-tested with zero I/O; the real `reqwest` network effects are behind the
+  opt-in `net` feature. See [docs/cve-corpus.md](docs/cve-corpus.md). (Mirror of
+  `agent-kgpacks-ts` #87.)
 
 ## Build and test
 
@@ -135,18 +153,62 @@ Run the CLI:
 cargo run --bin kgpacks -- demo
 # ingested 1 chunk(s); pack=demo@0.1.0; score=1
 
-# Ranked retrieval over a built pack, as JSON:
-cargo run --bin kgpacks -- --packs-dir ./packs query rust-expert "what is ownership?" -k 5
+# Build a CVE pack from a JSON corpus (resumable + pipelined; WS6):
+cargo run --bin kgpacks -- build cve --corpus ./cve-corpus.json --out ./packs/cve \
+  --batch 500 --with-entity-relations
+# If interrupted, re-run the SAME command with --resume to continue from the
+# last committed batch instead of rebuilding from scratch:
+cargo run --bin kgpacks -- build cve --corpus ./cve-corpus.json --out ./packs/cve \
+  --batch 500 --with-entity-relations --resume
+
+# Ranked retrieval over a built pack, as JSON (uses the default packs dir):
+cargo run --bin kgpacks -- query rust-expert "what is ownership?" -k 5
 
 # Graph-RAG: retrieve, then synthesize a grounded answer (needs the `copilot`
 # feature to reach the real Copilot backend):
-cargo run --bin kgpacks --features copilot -- --packs-dir ./packs ask rust-expert "what is ownership?"
+cargo run --bin kgpacks --features copilot -- ask rust-expert "what is ownership?"
+
+# Acquire the CVE corpus from the CVEProject/cvelistV5 release service (needs the
+# `net` feature for the real GitHub download; see docs/cve-corpus.md):
+cargo run --bin kgpacks --features net -- fetch-cve-corpus --kind delta
+
+# Verify a signed release index, then pull it (WS7). Fails closed on a
+# tampered/untrusted signature; `--require-signature` rejects an unsigned index;
+# `--no-verify` skips the check:
+cargo run --bin kgpacks -- pack pull rust-expert --require-signature
+```
+
+### Packs directory
+
+The CLI and the MCP server read installed packs from the same directory, so a
+pack installed by one is found by the other. It is resolved with this precedence
+(highest first):
+
+1. the `--packs-dir <dir>` flag (CLI only);
+2. the `KGPACKS_PACKS_DIR` environment variable;
+3. the default: `$XDG_DATA_HOME/kgpacks` when `XDG_DATA_HOME` is set (non-empty),
+   otherwise `~/.local/share/kgpacks`.
+
+Empty or whitespace-only overrides (both the flag and the env var) are treated
+as unset and fall through to the next level. The default directory is created on
+first use.
+
+```bash
+# Default location (~/.local/share/kgpacks or $XDG_DATA_HOME/kgpacks):
+cargo run --bin kgpacks -- query rust-expert "what is ownership?"
+
+# Override for one process via the environment:
+KGPACKS_PACKS_DIR=/srv/packs cargo run --bin kgpacks -- query rust-expert "what is ownership?"
+
+# Override explicitly with the flag (wins over the environment):
+cargo run --bin kgpacks -- --packs-dir ./packs query rust-expert "what is ownership?"
 ```
 
 CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the four default gates
 (build / test / fmt / clippy) plus a dedicated `--features copilot` build+clippy step
-(so the real RustyClawd transport stays compiled and linted), with all GitHub Actions
-pinned to commit SHAs.
+(so the real RustyClawd transport stays compiled and linted) and a `--features net`
+step (so the real `kgpacks-corpus` GitHub resolver/downloader stays compiled, linted and
+tested), with all GitHub Actions pinned to commit SHAs.
 
 ## Graph store + packs (M2)
 
@@ -186,6 +248,114 @@ build_pack("/tmp/rust-expert", &manifest, &content)?;
 let loaded = load_pack("/tmp/rust-expert")?;
 assert_eq!(loaded.graph_stats()?["articles"], 1.0);
 ```
+
+`validate_manifest` (the single schema gate behind `load_manifest` /
+`load_manifest_from_dir` / `build_pack` / `save_manifest`) is at full parity with
+the reference `validateManifest`: beyond `name`/`version`/`description` and the
+optional `graph_stats`/`eval_scores` blocks, it validates the optional build
+`provenance` block (`corpus` / `embedding` / `build` sections — declared string
+fields must be strings, `embedding.dimensions` must be a non-negative finite
+number) and deep-sanitizes it against prototype-pollution keys, mirroring
+`packages/packs/src/manifest.ts`. A manifest carrying a malformed `provenance`
+block is therefore rejected (and such a pack is skipped by `registry::list_packs`
+/ the `status` command) exactly as the reference rejects it. Cross-checked by
+`qa/manifest-provenance-parity`, which diffs the Rust `status` listing against a
+live-run JS reference oracle that mirrors the TypeScript `validateManifest`
+semantics over the same fixtures.
+
+### Multi-part release + linear-scaling loader (WS5)
+
+Packs larger than
+[`MAX_SINGLE_ARTIFACT_BYTES`](crates/kgpacks-packs/src/release.rs) (2 GiB) are
+published as an ordered set of fixed-size parts. `plan_multipart_release` is the
+release tool's split/accounting step run **dry** (it computes the index a
+`pack pull` re-verifies; it publishes nothing): every non-final part is exactly
+`part_size`, `sum(parts.bytes) == total_bytes`, each part carries the SHA-256 of
+its own bytes, and the index carries the SHA-256 of the whole artifact. Size
+accounting (`part_accounting`) is pure `u64` arithmetic, so the >2 GiB path is
+covered without materializing gigabytes. Hashing uses a self-contained SHA-256
+([`kgpacks-packs::sha256`](crates/kgpacks-packs/src/sha256.rs)) — no external
+crypto dependency.
+
+```rust
+use kgpacks_packs::{plan_multipart_release, part_accounting, requires_multipart};
+
+// Split a (small, here) artifact into 1 KiB parts and hash each part + the whole.
+let index = plan_multipart_release(&artifact_bytes, 1024)?;
+assert_eq!(index.parts.iter().map(|p| p.bytes).sum::<u64>(), index.total_bytes);
+
+// >2 GiB accounting without allocating the bytes.
+assert!(requires_multipart(3 * 1024 * 1024 * 1024));
+let acct = part_accounting(3 * 1024 * 1024 * 1024, 64 * 1024 * 1024)?; // 48 parts
+```
+
+The graph loader is also guarded to scale **linearly**: `plan_load_statements`
+separates the load *plan* from execution so a structural test can assert that
+loading 2N records issues at most ~3× the statements of N, and that every
+edge-creation statement uses PK-indexed single-`MATCH` clauses rather than the
+O(N²) comma two-pattern `MATCH (a {..}), (b {..})`. These guards run in CI as
+part of `cargo test --workspace` (`kgpacks-packs/tests/multipart_release.rs`,
+`kgpacks-packs/tests/linear_scaling_guard.rs`, and
+`kgpacks-ingestion/tests/linear_scaling_guard.rs`).
+
+## Resumable, pipelined CVE pack build (WS6)
+
+For large CVE packs, `kgpacks-packs` provides a build path that is both
+**resumable** and **pipelined** ([`build_cve_pack`](crates/kgpacks-packs/src/cve_build.rs)),
+alongside the one-shot [`build_pack`](crates/kgpacks-packs/src/pack.rs):
+
+- **Checkpoint / resume.** After every committed batch the builder writes a
+  sidecar next to the graph store — `graph.lbug.build-checkpoint.json` — recording
+  the last committed batch, the corpus offset, running counts and a stable
+  `params_hash` (a SHA-256 over the output-affecting inputs `src`, `year`,
+  `limit`, `batch`, `model`, `with_entity_relations`, independent of key order).
+  Re-running with resume enabled continues from the checkpoint (reopening the
+  store, skipping schema creation, rebuilding its de-dup set from the store, and
+  loading only the remaining records). If any parameter changed — so the recorded
+  `params_hash` no longer matches — the build restarts cleanly instead. The
+  sidecar is removed on a clean finish, so a completed pack carries no resume
+  state.
+- **Pipelined `embed || load`.** Embedding (CPU-bound, parallelizable) runs on a
+  worker thread while the database load/index (serial, single-writer) runs on the
+  caller's thread, connected by a **bounded** channel that overlaps the two
+  stages while capping how many embedded batches are held in memory.
+
+The corpus is consumed only through the
+[`CorpusSource`](crates/kgpacks-packs/src/corpus.rs) seam, so the external
+CVE-corpus fetch (issue #25) can plug in a live source without changing the
+builder. Until then, `FixtureCorpus` loads a corpus from a JSON array of
+records (`id`, `description`, optional `published_year`, `entities`, `relations`).
+
+### CLI
+
+```bash
+# Fresh build (fails if the pack already exists, so a finished pack is never
+# clobbered):
+kgpacks build cve --corpus ./cve-corpus.json --out ./packs/cve --batch 500
+
+# Resume an interrupted build from its checkpoint (same parameters), or start
+# clean if the parameters changed:
+kgpacks build cve --corpus ./cve-corpus.json --out ./packs/cve --batch 500 --resume
+```
+
+`build <pack>` flags:
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--corpus <file.json>` | *(required)* | CVE corpus JSON (the #25 seam). |
+| `--out <dir>` | `<packs-dir>/<pack>` | Output pack directory. |
+| `--batch <n>` | `64` | Records loaded (and checkpointed) per batch. |
+| `--limit <n>` | *(all)* | Cap on the number of corpus records considered (a prefix). |
+| `--year <y>` | *(none)* | Load only records whose `published_year` equals `y`. |
+| `--with-entity-relations` | off | Materialize `ENTITY_RELATION` edges. |
+| `--queue <n>` | `2` | Bound on embedded batches buffered between embed and load. |
+| `--pack-version <semver>` | `1.0.0` | Version written to the pack manifest. |
+| `--resume` | off | Resume from a matching checkpoint (else clean restart). |
+
+The command prints a JSON report (`paramsHash`, `resumed`, `resumedFromBatch`,
+`batchesCommitted`, `counts`). The checkpoint file lives at
+`<out>/graph.lbug.build-checkpoint.json` while a build is in progress and is
+removed on a clean finish.
 
 ## Ingestion pipeline (M3)
 
@@ -230,7 +400,7 @@ a Rust module proven by a mirroring parity test:
 
 | Reference (`agent-kgpacks`)              | Rust module                              | Parity test                          |
 | ---------------------------------------- | ---------------------------------------- | ------------------------------------ |
-| `embeddings/chunker.py`                  | `kgpacks-embeddings::chunker`            | `kgpacks-embeddings/tests/chunker.rs` |
+| `ingestion/src/chunking.ts` (TS parity)  | `kgpacks-embeddings::chunker`            | `kgpacks-embeddings/tests/chunker.rs` |
 | `embeddings/generator.py`                | `kgpacks-embeddings` (`Embedder`)        | `kgpacks-embeddings/tests/generator.rs` |
 | `extraction/llm_extractor.py`            | `kgpacks-ingestion::extraction`          | `kgpacks-ingestion/tests/extraction.rs` |
 | `expansion/link_discovery.py`            | `kgpacks-ingestion::link_discovery`      | `kgpacks-ingestion/tests/link_discovery.rs` |
@@ -351,7 +521,42 @@ the suite is fully offline.
 `kgpacks-query::retrieve_and_synthesize` is the **graph-RAG query**: it runs M4
 retrieval, hands the ranked sections to the agent as citation-tagged context,
 and returns the grounded answer plus its supporting hits. `kgpacks-cli` surfaces
-it (`query` → ranked JSON, `ask` → grounded answer JSON).
+it (`query` → ranked JSON, `ask` → grounded answer JSON). The read-path `status`
+command reports the resolved packs directory and the installed packs as JSON
+(`{ packsDir, count, packs: [{ name, version, dbPresent }] }`, sorted by name),
+backed by `kgpacks-packs::registry::list_packs`. The read-path subset of the
+reference `pack` command group is also ported — `pack list`
+(`[{ name, version, description }]`, sorted by name), `pack info <pack>` (the
+pack's full manifest), and `pack validate <pack>` (`{ valid, name, version }`) —
+over the same `kgpacks-packs` registry/manifest APIs. The offline release
+planner is also ported — `pack release-plan <pack> [--tag <t>] [--model <id>]
+[--corpus-commit <sha>] [--corpus-date <date>]` prints the network-free plan
+(`{ name, tag, version, model, provenance, publishTargets, indexFilename }`) for
+publishing a pack. The write/network `pack` subcommands (`install`/`pull`/`remove`),
+the byte-level release packaging + `gh` upload behind `release-plan`, and the
+ingestion/eval verbs (`create`/`update`/`eval`) remain follow-ups (issue #13).
+
+### Versioned release tags + provenance (WS3)
+
+A pack is published to an **immutable dated release tag** `<name>-YYYY.MM[.N]`
+(e.g. `cve-2025.06`) whose SemVer version is derived **unpadded** — the tag's
+zero-padded month becomes a leading-zero-free numeric core, since SemVer 2.0
+forbids leading zeros: `pack_version_from_release_tag("cve-2025.06")` →
+`"2025.6.0"`, `"cve-2025.06.1"` → `"2025.6.1"`. Undated tags (the stable `packs`
+latest-pointer, `cve`, `cve-latest`, the empty string) and out-of-range months
+are rejected. Every dated release also moves the stable `packs` latest-pointer to
+the same assets (`publish_targets("cve-2025.06")` → `["cve-2025.06", "packs"]`),
+so the `pack pull` UX — which defaults to `packs` — always resolves the newest
+version (`latest_release_tag` resolves the highest dated tag by SemVer
+precedence). The pack `manifest.json` build `provenance` block
+(`corpus`/`embedding`/`build`) is mirrored into the `<name>.pack-release.json`
+release index (`kgpacks-packs::release::PackReleaseIndex`), filling gaps from CLI
+overrides and a release-time `build.date`, so the manifest and the release index
+can be cross-checked. This ports `scripts/release-pack.mjs` +
+`packages/packs/src/versioning.ts` `packVersionFromReleaseTag`; the pure, offline
+half (version/provenance/publish-target/latest resolution + the index model) is
+implemented and tested here, while the byte-level multipart `tar.gz` packaging +
+`gh` upload remain follow-ups (issue #13), like the write/network `pull` path.
 
 Each reference module maps to a Rust module proven by a mirroring parity test:
 
@@ -364,16 +569,119 @@ Each reference module maps to a Rust module proven by a mirroring parity test:
 | `agent/src/{prompts,errors,constants}.ts`     | `kgpacks-agent::{prompts,errors,constants}`  | exercised by the above               |
 | `query/src/retriever.ts` `retrieveAndSynthesize` | `kgpacks-query::synthesis`                | `query/tests/synthesis.rs`           |
 | `cli/src/commands/query.ts` (+ `ask` flow)    | `kgpacks-cli` (`query` / `ask`)              | `cli/tests/e2e.rs`, unit tests       |
+| `cli/src/commands/status.ts` (+ `packs/registry.ts` `listPacks`) | `kgpacks-cli` (`status`) + `kgpacks-packs::registry::list_packs` | `cli/tests/e2e.rs`, `qa/status-parity/` |
+| `cli/src/commands/pack.ts` (read-path: `list`/`info`/`validate`) | `kgpacks-cli` (`pack list`/`info`/`validate`) over `kgpacks-packs::{registry,manifest}` | `cli/tests/e2e.rs`, unit tests, `qa/pack-parity/` |
+| `scripts/release-pack.mjs` + `versioning.ts` `packVersionFromReleaseTag` | `kgpacks-packs::release` + `kgpacks-cli` (`pack release-plan`) | `packs/tests/release.rs`, `packs/tests/versioning.rs`, unit tests, `qa/release-parity/` |
 
 The agent parity suite mirrors the reference's `agent/test/*` structurally
 (valid shapes, fence-stripping, citation derivation, usage accounting,
 lifecycle, fail-closed errors) against a mock transport, and the CLI `e2e` test
 drives the full `build pack → vector retrieval → graph-RAG query` flow through
-the actual command surface offline. Scope notes: the real transport is gated
+the actual command surface offline. The `status` command additionally ships a
+cross-implementation parity harness (`qa/status-parity/`, driven by the
+`status-ts-parity` qa-team scenario) that diffs the Rust payload against a live
+`agent-kgpacks-ts` reference oracle; the read-path `pack` subcommands ship an
+equivalent harness (`qa/pack-parity/`, driven by the `pack-ts-parity` scenario)
+that diffs `pack list`/`info`/`validate` against the same live reference. Scope
+notes: the real transport is gated
 behind the non-default `copilot` feature (compiled + linted in a dedicated CI
-step) so the default gates stay lean and hermetic; the retrieval ENHANCEMENTS
-layer, the MCP/backend HTTP surfaces, and the `parity/` harness remain
-follow-ups beyond this core flow.
+step) so the default gates stay lean and hermetic; the remaining write/eval CLI
+path (`create`/`update`, `research-sources`, the write/network `pack`
+subcommands, and `eval`; issue #13), the retrieval ENHANCEMENTS layer, the
+MCP/backend HTTP surfaces, and the `parity/` harness remain follow-ups beyond
+this core flow.
+
+## Quality audit
+
+The repository is maintained under a **Ten-Wave Quality Audit** — a repeatable,
+agent-driven process that runs ten `SEEK → VALIDATE → FIX` waves across
+correctness, memory safety, error handling, idiomatic Rust, test
+coverage/quality, and M1–M5 parity with the TypeScript reference. Every fix PR is
+gated behind CI **and** an explicit proxy review from the `crusty-old-engineer`
+reviewer. See [`docs/quality-audit/`](docs/quality-audit/README.md) for the
+usage, reference, configuration, and worked examples.
+
+## Entity-graph traversal + scalable `ENTITY_RELATION` bulk load (WS8)
+
+`ENTITY_RELATION` becomes a real, scalable feature (mirror of the `agent-kgpacks-ts`
+WS8 workstream). Two capabilities land across `kgpacks-query`, `kgpacks-backend`
+and `kgpacks-ingestion`:
+
+- **Entity-graph traversal** — [`kgpacks_query::entity_graph`] walks the
+  `Entity` / `HAS_ENTITY` / `ENTITY_RELATION` graph around a seed entity, bounded to
+  `depth 1..=3` and a node `limit`, with deterministic `(depth ASC, name ASC)`
+  ordering and a typed result (nodes with `depth` / `type` / `articles_count`, edges
+  with `source` / `target` / `weight`). `mode = auto` uses **co-occurrence** (two
+  entities share an `Article`) when the pack has no `ENTITY_RELATION` edges — the
+  CVE-pack default — and explicit **relation** traversal when it does.
+- **Backend API** — `kgpacks-backend` exposes `GET /api/v1/graph/entities`
+  ([`graph_entities`]): required `entity`; bounded `depth` (1..3) and `limit`
+  (1..200); enum `mode`; the standard `MISSING_PARAMETER` / `INVALID_PARAMETER` 400
+  envelopes; and a `404 NOT_FOUND` for an unknown seed.
+- **Scalable bulk `ENTITY_RELATION` load** —
+  [`kgpacks_ingestion::bulk_create_entity_relations`] prefers LadybugDB's
+  `COPY ENTITY_RELATION FROM <csv>` and falls back to PK-indexed
+  `UNWIND … MATCH … MATCH … CREATE` batches. Both are non-O(N²) (no comma
+  two-pattern `MATCH`); the per-article processor now uses this instead of a per-row
+  round-trip loop. `ENTITY_RELATION` stays default-skipped in the CVE builder (built
+  only under `--with-entity-relations`).
+
+See [docs/entity-graph.md](docs/entity-graph.md) for the modes, request contract,
+result shape, and bulk-loader semantics. Each reference module maps to a Rust module
+proven by a mirroring test:
+
+| Reference (`agent-kgpacks-ts`)                     | Rust module                                        | Test                                     |
+| -------------------------------------------------- | -------------------------------------------------- | ---------------------------------------- |
+| `query/src/entity-graph.ts`                        | `kgpacks-query::entity_graph`                      | `query/tests/entity_graph.rs`            |
+| `backend/src/{routes,services}/graph-entities.ts`  | `kgpacks-backend::graph_entities` (+ `errors`)     | `backend/tests/graph_entities.rs`        |
+| `ingestion/src/streaming-loader.ts` (bulk REL)     | `kgpacks-ingestion::entity_relations`              | `ingestion/tests/entity_relations.rs`    |
+## Release-index signing (WS7)
+
+Beyond the sha256 **integrity** already carried in the `<name>.pack-release.json`
+release index, WS7 ([#22](https://github.com/rysweet/agent-kgpacks-rs/issues/22))
+adds Ed25519 **authenticity**: the index is signed with a release private key
+(a CI secret, never committed), and `pack pull` verifies that signature before
+trusting the index.
+
+The primitives live in [`kgpacks-packs::signing`](crates/kgpacks-packs/src/signing.rs)
+and are deliberately **format-agnostic** — they sign and verify the *raw
+serialized bytes* of the index and never parse it, so they compose additively
+over the WS3 ([#18](https://github.com/rysweet/agent-kgpacks-rs/issues/18))
+release-index schema whether or not it has landed:
+
+- `SigningKeyPair` — pure-Rust Ed25519 (`ed25519-dalek`) keypair generation
+  (OS-CSPRNG seeded), detached signing over the raw index bytes, and the
+  `<name>.pack-release.json.sig` sidecar (`{algorithm, signature, public_key}`,
+  base64).
+- `verify_pack_index_signature(index_bytes, sig, trusted_pubkey) -> bool` —
+  **verify-before-parse** over the raw bytes; rejects tampered bytes, wrong-length
+  inputs, and signatures from untrusted keys (uses `verify_strict`, never panics).
+- `signature_plan(SignatureInputs{present, valid, require_signature, no_verify})`
+  → `Verify | Fail | Warn | Skip` — the pull-time policy: present+valid ⇒
+  **Verify**; present+invalid ⇒ **Fail** (fail-closed); absent ⇒ **Warn**
+  (integrity-only) unless `--require-signature` ⇒ **Fail**; `--no-verify` ⇒
+  **Skip**. `--require-signature` together with `--no-verify` is a usage error
+  (`validate_signature_flags`).
+
+The **trusted** public key is committed at
+[`crates/kgpacks-packs/keys/pack-release-signing.pub`](crates/kgpacks-packs/keys/pack-release-signing.pub)
+(base64 raw 32 bytes); `pack pull` verifies against it by default, overridable
+with `--trusted-key <base64>` or `KGPACKS_TRUSTED_RELEASE_KEY`. Trust is anchored
+on that committed key — **not** on the `public_key` a sidecar happens to carry.
+
+```bash
+# Verify against the committed trusted key (default), requiring a signature:
+kgpacks --packs-dir ./packs pack pull rust-expert --require-signature
+# Skip verification (integrity-only):
+kgpacks --packs-dir ./packs pack pull rust-expert --no-verify
+```
+
+| Behavior (issue #22)                                   | Rust surface                                          | Test                                                    |
+| ------------------------------------------------------ | ----------------------------------------------------- | ------------------------------------------------------- |
+| Keypair gen + detached sign over raw index bytes       | `signing::SigningKeyPair`                             | `packs/tests/signing.rs`, `signing` unit tests          |
+| `verify_pack_index_signature` (tamper / wrong-key)     | `signing::verify_pack_index_signature`               | `packs/tests/signing.rs`, `signing` unit tests          |
+| Pull-time policy + mutually-exclusive flags            | `signing::{signature_plan, validate_signature_flags}` | `signing` unit tests, `cli/tests/pack_pull.rs`          |
+| `pack pull` verify path (fail-closed)                  | `kgpacks-cli` (`pack pull`)                           | `cli/tests/pack_pull.rs`                                |
 
 ## Evaluation harness + CVE pack eval (WS1)
 

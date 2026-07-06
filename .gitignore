@@ -8,6 +8,27 @@ rustc-ice-*.txt
 *.swp
 .DS_Store
 
-# gadugi-test (qa/) run artifacts
-/outputs/
+# Agent session / runtime artifacts — never commit these onto audit branches.
+.claude/runtime/
+.claude/**/runtime/
+
+# Secrets — never commit credentials or key material.
+.env
+.env.*
+*.pem
+*.key
+
+# gadugi-agentic-test runtime artifacts (qa/ parity harness runs, in the repo root
+# or under qa/ depending on the working directory).
 /logs/
+/outputs/
+/reports/
+/screenshots/
+/qa/outputs/
+/qa/reports/
+/qa/logs/
+/qa/temp/
+/qa/screenshots/
+
+# CVE corpus fetch scratch directory (default --dest for `fetch-cve-corpus`)
+/.scratch/

@@ -16,6 +16,17 @@ use crate::util::{value_as_i64, value_as_string};
 /// link" (parity with the reference membership check).
 const EXISTING_STATES: [&str; 4] = ["loaded", "claimed", "discovered", "processed"];
 
+/// Cypher that creates one `LINKS_TO` edge between two existing articles, each
+/// located by its **primary key** (`title`) in its own single `MATCH`.
+///
+/// Two PK-indexed point lookups replace the O(N²) comma two-pattern
+/// `MATCH (source {..}), (target {..})`, whose cartesian shape pushes link
+/// creation toward quadratic work as the graph grows (the WS5 linear-scaling
+/// guard forbids that shape).
+pub const CREATE_LINK_CYPHER: &str = "MATCH (source:Article {title: $source}) \
+     MATCH (target:Article {title: $target}) \
+     CREATE (source)-[:LINKS_TO {link_type: 'internal'}]->(target)";
+
 /// Namespace prefixes (lowercased) that are filtered out of expansion.
 const INVALID_PREFIXES: [&str; 15] = [
     "wikipedia:",
@@ -66,16 +77,20 @@ impl<'c, 'db> LinkDiscovery<'c, 'db> {
         let next_depth = current_depth + 1;
         let mut new_articles = 0usize;
 
-        let valid_links: Vec<&String> = links.iter().filter(|l| Self::is_valid_link(l)).collect();
+        let valid_links: Vec<&str> = links
+            .iter()
+            .filter(|l| Self::is_valid_link(l))
+            .map(String::as_str)
+            .collect();
 
         // Batch the existence check and the existing-edge set (avoids N+1).
         let existing_articles = self.batch_article_exists(&valid_links)?;
         let existing_links = self.existing_links(source_title)?;
 
         for link in valid_links {
-            match existing_articles.get(link.as_str()) {
+            match existing_articles.get(link) {
                 Some(state) if EXISTING_STATES.contains(&state.as_str()) => {
-                    if !existing_links.contains(link.as_str()) {
+                    if !existing_links.contains(link) {
                         // Per-link best-effort, like the reference's
                         // `try: … except: continue` around each link.
                         let _ = self.create_link(source_title, link);
@@ -143,13 +158,16 @@ impl<'c, 'db> LinkDiscovery<'c, 'db> {
 
     /// Existence + state for many titles in a single query. Titles absent from
     /// the returned map do not exist. Parity with `_batch_article_exists`.
-    fn batch_article_exists(&self, titles: &[&String]) -> Result<HashMap<String, String>> {
+    fn batch_article_exists(&self, titles: &[&str]) -> Result<HashMap<String, String>> {
         if titles.is_empty() {
             return Ok(HashMap::new());
         }
         let list = Value::List(
             LogicalType::String,
-            titles.iter().map(|t| Value::String((*t).clone())).collect(),
+            titles
+                .iter()
+                .map(|t| Value::String((*t).to_string()))
+                .collect(),
         );
         let rows = self.conn.run_params(
             "MATCH (a:Article) WHERE a.title IN $titles \
@@ -207,8 +225,7 @@ impl<'c, 'db> LinkDiscovery<'c, 'db> {
     /// Parity with `_create_link`.
     fn create_link(&self, source_title: &str, target_title: &str) -> Result<()> {
         self.conn.run_params(
-            "MATCH (source:Article {title: $source}), (target:Article {title: $target}) \
-             CREATE (source)-[:LINKS_TO {link_type: 'internal'}]->(target)",
+            CREATE_LINK_CYPHER,
             vec![
                 ("source", Value::String(source_title.to_string())),
                 ("target", Value::String(target_title.to_string())),

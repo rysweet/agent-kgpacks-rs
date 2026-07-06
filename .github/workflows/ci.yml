@@ -24,9 +24,10 @@ jobs:
         # `kgpacks-db` links LadybugDB (the `lbug` crate), which compiles its
         # bundled C++ engine from source via CMake. ubuntu-latest ships these,
         # but install them explicitly so the build never depends on the image.
+        # `unzip` backs `kgpacks-corpus`'s extractor and its extraction tests.
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends cmake build-essential
+          sudo apt-get install -y --no-install-recommends cmake build-essential unzip
 
       - name: Toolchain
         run: |
@@ -60,3 +61,18 @@ jobs:
         run: |
           cargo clippy -p kgpacks-agent --all-targets --features copilot --locked -- -D warnings
           cargo test -p kgpacks-agent --features copilot --locked
+
+      - name: Net feature (real CVE-corpus GitHub integration) — lint + test
+        # The real reqwest-backed GitHub release resolver + asset downloader
+        # (`kgpacks-corpus`, issue #25) are gated behind the non-default `net`
+        # feature so the gates above stay lean and offline. This step compiles +
+        # lints + tests that wiring in `kgpacks-corpus` (which has no LadybugDB
+        # dependency, so it is fast) so it never bitrots. The parity-critical
+        # selection/validation/provenance logic and the injected-seam orchestrator
+        # are already covered by the default gate; this adds the real network path.
+        # (`kgpacks-cli`'s thin `net` forwarder is covered by the default-feature
+        # build; enabling it here would rebuild the lbug engine via feature
+        # unification, so it is intentionally excluded — same as `copilot` above.)
+        run: |
+          cargo clippy -p kgpacks-corpus --all-targets --features net --locked -- -D warnings
+          cargo test -p kgpacks-corpus --features net --locked

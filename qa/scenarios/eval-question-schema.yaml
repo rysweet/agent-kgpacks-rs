@@ -14,7 +14,7 @@ steps:
   - action: run
     description: Run the CVE eval-question schema acceptance test.
     params:
-      command: "cargo test -p kgpacks-eval --test eval_questions_schema --locked"
+      command: "cd \"$(git rev-parse --show-toplevel)\" && cargo test -p kgpacks-eval --test eval_questions_schema --locked"
     timeout: 300000
 assertions:
   - type: output_contains

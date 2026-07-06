@@ -10,11 +10,12 @@
 
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
 use kgpacks_agent::{
     Transport, TransportError, TransportOpenConfig, TransportResponse, TransportSession, Usage,
 };
-use kgpacks_cli::run_with_transport;
+use kgpacks_cli::{run, run_with_transport};
 use kgpacks_db::{Database, LogicalType, Value};
 use kgpacks_embeddings::Embedder;
 use tempfile::tempdir;
@@ -121,6 +122,111 @@ fn argv(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|s| s.to_string()).collect()
 }
 
+/// Extract the `packsDir` value the CLI reports from a `status` JSON blob.
+fn packs_dir_field(status_json: &str) -> &str {
+    let key = "\"packsDir\":";
+    let after = status_json
+        .split_once(key)
+        .unwrap_or_else(|| panic!("no packsDir in status output: {status_json}"))
+        .1;
+    let start = after.find('"').expect("packsDir opening quote") + 1;
+    let rest = &after[start..];
+    let end = rest.find('"').expect("packsDir closing quote");
+    &rest[..end]
+}
+
+/// End-to-end proof of the WS4 packs-dir precedence, driven through the REAL
+/// `kgpacks` binary: `--packs-dir` flag beats `KGPACKS_PACKS_DIR`, which beats
+/// the XDG default (`$XDG_DATA_HOME/kgpacks`, else `$HOME/.local/share/kgpacks`).
+/// The `status` command reports the resolved `packsDir`, so each case asserts
+/// the winning directory (and, for the precedence cases, that the losing
+/// directory is not chosen).
+///
+/// Each invocation sets its environment on the CHILD [`Command`] and never
+/// mutates this test process's own environment. Mutating the shared process env
+/// (`set_var`/`remove_var`) would data-race the native `getenv` LadybugDB
+/// performs when the sibling e2e tests load their `~/.lbdb` extensions.
+#[test]
+fn cli_resolves_packs_dir_by_precedence() {
+    let bin = env!("CARGO_BIN_EXE_kgpacks");
+    let root = tempdir().expect("tempdir");
+    let flag_dir = root.path().join("flag");
+    let env_dir = root.path().join("env");
+    let xdg_home = root.path().join("xdg");
+    let home_dir = root.path().join("home");
+
+    // Run `kgpacks <args> status` with `env_overrides` applied to the CHILD only
+    // (`None` removes the variable), returning the reported `packsDir`.
+    let packs_dir = |env_overrides: &[(&str, Option<&Path>)], args: &[&str]| -> String {
+        let mut cmd = Command::new(bin);
+        cmd.args(args).arg("status");
+        for (key, value) in env_overrides {
+            match value {
+                Some(path) => {
+                    cmd.env(key, path);
+                }
+                None => {
+                    cmd.env_remove(key);
+                }
+            }
+        }
+        let output = cmd.output().expect("run kgpacks status");
+        assert!(
+            output.status.success(),
+            "kgpacks status failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+        packs_dir_field(&stdout).to_string()
+    };
+
+    let both_overrides = [
+        ("KGPACKS_PACKS_DIR", Some(env_dir.as_path())),
+        ("XDG_DATA_HOME", Some(xdg_home.as_path())),
+    ];
+
+    // (1) The `--packs-dir` flag wins over BOTH the env override and the XDG
+    // default (which are both set to different, losing directories).
+    let resolved = packs_dir(
+        &both_overrides,
+        &["--packs-dir", flag_dir.to_str().unwrap()],
+    );
+    assert_eq!(Path::new(&resolved), flag_dir, "flag beats env + xdg");
+
+    // (2) `KGPACKS_PACKS_DIR` wins over the XDG default (no flag).
+    let resolved = packs_dir(&both_overrides, &[]);
+    assert_eq!(Path::new(&resolved), env_dir, "env beats xdg default");
+
+    // (3) With no flag and no env override, the default is `$XDG_DATA_HOME/kgpacks`.
+    let resolved = packs_dir(
+        &[
+            ("KGPACKS_PACKS_DIR", None),
+            ("XDG_DATA_HOME", Some(xdg_home.as_path())),
+        ],
+        &[],
+    );
+    assert_eq!(
+        Path::new(&resolved),
+        xdg_home.join("kgpacks"),
+        "xdg default"
+    );
+
+    // (4) With XDG unset too, the default falls back to `$HOME/.local/share/kgpacks`.
+    let resolved = packs_dir(
+        &[
+            ("KGPACKS_PACKS_DIR", None),
+            ("XDG_DATA_HOME", None),
+            ("HOME", Some(home_dir.as_path())),
+        ],
+        &[],
+    );
+    assert_eq!(
+        Path::new(&resolved),
+        home_dir.join(".local").join("share").join("kgpacks"),
+        "home fallback default"
+    );
+}
+
 #[test]
 fn cli_query_then_ask_runs_the_graph_rag_flow_end_to_end() {
     let tmp = tempdir().expect("tempdir");
@@ -181,5 +287,229 @@ fn cli_query_then_ask_runs_the_graph_rag_flow_end_to_end() {
     assert!(
         ask_out.contains("\"s1\"") || ask_out.contains("\"s2\""),
         "ask JSON missing a cited section: {ask_out}"
+    );
+}
+
+#[test]
+fn cli_status_lists_installed_packs_through_the_command_surface() {
+    // `status` needs no transport and never opens the store — it only checks the
+    // graph store's presence. Drive it through the production `run` entry to
+    // prove the dispatch + registry read-path end to end over a real packs
+    // directory (one pack with a graph store present, one without, plus a
+    // manifest-less directory that must be skipped). The "present" store is a
+    // plain marker file: `status` only stats it, so there is no need to build a
+    // real LadybugDB (which would load the shared `vector` extension and race
+    // the other e2e test).
+    let tmp = tempdir().expect("tempdir");
+    let packs_dir = tmp.path();
+
+    let with_db = packs_dir.join("rustpack");
+    fs::create_dir_all(&with_db).expect("mkdir rustpack");
+    fs::write(
+        with_db.join("manifest.json"),
+        r#"{"name":"rustpack","version":"1.4.0"}"#,
+    )
+    .expect("write manifest");
+    fs::write(with_db.join("graph.lbug"), b"").expect("write graph store marker");
+
+    let no_db = packs_dir.join("emptypack");
+    fs::create_dir_all(&no_db).expect("mkdir emptypack");
+    fs::write(
+        no_db.join("manifest.json"),
+        r#"{"name":"emptypack","version":"0.1.0"}"#,
+    )
+    .expect("write manifest");
+
+    fs::create_dir_all(packs_dir.join("junk")).expect("mkdir junk");
+
+    let out = run(&argv(&[
+        "--packs-dir",
+        packs_dir.to_str().unwrap(),
+        "status",
+    ]))
+    .expect("status command");
+
+    let value: serde_json::Value = serde_json::from_str(&out).expect("status JSON");
+    assert_eq!(value["packsDir"], packs_dir.display().to_string());
+    assert_eq!(value["count"], 2, "status JSON: {out}");
+    let packs = value["packs"].as_array().expect("packs array");
+    // Sorted by name: emptypack before rustpack.
+    assert_eq!(packs[0]["name"], "emptypack");
+    assert_eq!(packs[0]["dbPresent"], false);
+    assert_eq!(packs[1]["name"], "rustpack");
+    assert_eq!(packs[1]["version"], "1.4.0");
+    assert_eq!(packs[1]["dbPresent"], true);
+}
+
+/// Helper: write a manifest into `<packs_dir>/<name>/manifest.json`.
+fn write_pack_manifest(packs_dir: &Path, name: &str, manifest_json: &str) {
+    let dir = packs_dir.join(name);
+    fs::create_dir_all(&dir).expect("mkdir pack");
+    fs::write(dir.join("manifest.json"), manifest_json).expect("write manifest");
+}
+
+#[test]
+fn cli_pack_list_projects_and_sorts_installed_packs() {
+    // `pack list` reads the registry only — no store, no transport. Drive it
+    // through the production `run` entry over a real packs directory with a mix
+    // of present/absent descriptions, sort-discriminating names, and skipped
+    // entries (an invalid manifest and a manifest-less directory).
+    let tmp = tempdir().expect("tempdir");
+    let packs_dir = tmp.path();
+
+    write_pack_manifest(
+        packs_dir,
+        "bravo",
+        r#"{"name":"bravo","version":"0.5.0","description":"Bravo pack"}"#,
+    );
+    write_pack_manifest(packs_dir, "alpha", r#"{"name":"alpha","version":"1.0.0"}"#);
+    // Invalid manifest (missing version) and a manifest-less directory: skipped.
+    write_pack_manifest(packs_dir, "broken", r#"{"name":"broken"}"#);
+    fs::create_dir_all(packs_dir.join("no-manifest")).expect("mkdir no-manifest");
+
+    let out = run(&argv(&[
+        "--packs-dir",
+        packs_dir.to_str().unwrap(),
+        "pack",
+        "list",
+    ]))
+    .expect("pack list command");
+
+    let value: serde_json::Value = serde_json::from_str(&out).expect("pack list JSON");
+    let packs = value.as_array().expect("pack list is an array");
+    assert_eq!(packs.len(), 2, "pack list JSON: {out}");
+    // Sorted by name: alpha before bravo.
+    assert_eq!(packs[0]["name"], "alpha");
+    assert_eq!(packs[0]["version"], "1.0.0");
+    // Absent description defaults to "" (never null / missing).
+    assert_eq!(packs[0]["description"], "");
+    assert_eq!(packs[1]["name"], "bravo");
+    assert_eq!(packs[1]["description"], "Bravo pack");
+}
+
+#[test]
+fn cli_pack_info_prints_the_full_manifest() {
+    // `pack info <name>` prints the pack's full manifest, preserving optional
+    // sections and unknown keys verbatim (the on-disk snake_case shape).
+    let tmp = tempdir().expect("tempdir");
+    let packs_dir = tmp.path();
+    write_pack_manifest(
+        packs_dir,
+        "rich",
+        r#"{"name":"rich","version":"1.2.3","description":"Rich pack","graph_stats":{"articles":294,"size_mb":12.5},"channel":"stable"}"#,
+    );
+
+    let out = run(&argv(&[
+        "--packs-dir",
+        packs_dir.to_str().unwrap(),
+        "pack",
+        "info",
+        "rich",
+    ]))
+    .expect("pack info command");
+
+    let value: serde_json::Value = serde_json::from_str(&out).expect("pack info JSON");
+    assert_eq!(value["name"], "rich");
+    assert_eq!(value["version"], "1.2.3");
+    assert_eq!(value["description"], "Rich pack");
+    // Integral graph stats are emitted as integers, floats stay floats.
+    assert_eq!(value["graph_stats"]["articles"], 294);
+    assert_eq!(value["graph_stats"]["size_mb"], 12.5);
+    // Unknown top-level keys are preserved verbatim.
+    assert_eq!(value["channel"], "stable");
+}
+
+#[test]
+fn cli_pack_info_reports_missing_pack() {
+    let tmp = tempdir().expect("tempdir");
+    let err = run(&argv(&[
+        "--packs-dir",
+        tmp.path().to_str().unwrap(),
+        "pack",
+        "info",
+        "nope",
+    ]))
+    .expect_err("missing pack must error");
+    assert_eq!(err, "pack not found: nope");
+}
+
+#[test]
+fn cli_pack_validate_accepts_a_valid_pack() {
+    let tmp = tempdir().expect("tempdir");
+    let packs_dir = tmp.path();
+    write_pack_manifest(
+        packs_dir,
+        "goodpack",
+        r#"{"name":"goodpack","version":"2.1.0"}"#,
+    );
+
+    let out = run(&argv(&[
+        "--packs-dir",
+        packs_dir.to_str().unwrap(),
+        "pack",
+        "validate",
+        "goodpack",
+    ]))
+    .expect("pack validate command");
+
+    let value: serde_json::Value = serde_json::from_str(&out).expect("pack validate JSON");
+    assert_eq!(value["valid"], true);
+    assert_eq!(value["name"], "goodpack");
+    assert_eq!(value["version"], "2.1.0");
+}
+
+#[test]
+fn cli_pack_validate_rejects_an_invalid_manifest() {
+    let tmp = tempdir().expect("tempdir");
+    let packs_dir = tmp.path();
+    // Present but schema-invalid (missing required `version`).
+    write_pack_manifest(packs_dir, "brokenpack", r#"{"name":"brokenpack"}"#);
+
+    let err = run(&argv(&[
+        "--packs-dir",
+        packs_dir.to_str().unwrap(),
+        "pack",
+        "validate",
+        "brokenpack",
+    ]))
+    .expect_err("invalid manifest must error");
+    assert!(
+        err.to_lowercase().contains("version"),
+        "expected a version validation error, got: {err}"
+    );
+}
+
+#[test]
+fn cli_pack_validate_rejects_a_traversal_name() {
+    // A path-traversal name is rejected as "pack not found" BEFORE any path is
+    // built (name is gated on PACK_NAME_RE), so it can never escape the packs dir.
+    let tmp = tempdir().expect("tempdir");
+    let err = run(&argv(&[
+        "--packs-dir",
+        tmp.path().to_str().unwrap(),
+        "pack",
+        "validate",
+        "../secrets",
+    ]))
+    .expect_err("traversal name must error");
+    assert_eq!(err, "pack not found: ../secrets");
+}
+
+#[test]
+fn cli_pack_requires_a_known_subcommand() {
+    let tmp = tempdir().expect("tempdir");
+    let base = tmp.path().to_str().unwrap();
+
+    let missing = run(&argv(&["--packs-dir", base, "pack"])).expect_err("bare `pack` must error");
+    assert!(
+        missing.contains("missing pack subcommand"),
+        "got: {missing}"
+    );
+
+    let unknown = run(&argv(&["--packs-dir", base, "pack", "install"]))
+        .expect_err("unknown subcommand must error");
+    assert!(
+        unknown.contains("unknown pack subcommand: install"),
+        "got: {unknown}"
     );
 }

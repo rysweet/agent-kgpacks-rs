@@ -13,9 +13,15 @@ description = "Command-line interface for agent-kgpacks-rs."
 # the `ask` flow is proven by tests via an injected mock transport.
 default = []
 copilot = ["kgpacks-agent/copilot"]
+# Build the `fetch-cve-corpus` command with the real GitHub release resolver +
+# asset downloader. Off by default (mirrors `copilot`): the parity-critical
+# selection/validation/provenance logic and the injected-seam orchestrator are
+# fully tested in `kgpacks-corpus` without it.
+net = ["kgpacks-corpus/net"]
 
 [dependencies]
 kgpacks-agent = { workspace = true }
+kgpacks-corpus = { workspace = true }
 kgpacks-db = { workspace = true }
 kgpacks-embeddings = { workspace = true }
 kgpacks-eval = { workspace = true }
@@ -28,6 +34,7 @@ serde_json.workspace = true
 kgpacks-agent = { workspace = true }
 kgpacks-db = { workspace = true }
 kgpacks-embeddings = { workspace = true }
+kgpacks-packs = { workspace = true }
 serde_json.workspace = true
 tempfile.workspace = true
 
