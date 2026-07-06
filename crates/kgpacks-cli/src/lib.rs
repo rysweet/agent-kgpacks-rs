@@ -19,7 +19,12 @@ use kgpacks_db::{Database, GraphStore};
 use kgpacks_embeddings::Embedder;
 use kgpacks_eval::{EvalCase, Harness};
 use kgpacks_ingestion::Ingestor;
-use kgpacks_packs::{plan_release, PackManifest, ProvenanceOverrides, LATEST_POINTER_TAG};
+use kgpacks_packs::{
+    decode_public_key, pack_release_filename, pack_release_signature_filename, plan_release,
+    signature_plan, trusted_release_public_key, validate_signature_flags,
+    verify_pack_index_signature, PackIndexSignature, PackManifest, ProvenanceOverrides,
+    SignatureInputs, SignaturePlan, LATEST_POINTER_TAG,
+};
 use kgpacks_query::{
     retrieve_and_synthesize, PackRetriever, RetrieveMode, RetrieveOptions, Retriever,
 };
@@ -31,6 +36,11 @@ const DB_FILENAME: &str = "graph.lbug";
 /// Default number of results retrieved when `-k` is omitted (matches the
 /// reference CLI's `DEFAULT_K = 5`, distinct from the library's `DEFAULT_K`).
 const CLI_DEFAULT_K: usize = 5;
+
+/// Environment variable overriding the trusted release public key (base64 raw
+/// 32-byte Ed25519). Falls back to the committed
+/// `kgpacks-packs/keys/pack-release-signing.pub` when unset.
+const TRUSTED_KEY_ENV: &str = "KGPACKS_TRUSTED_RELEASE_KEY";
 
 /// A factory for the graph-RAG agent's transport (the `ask` execution seam).
 pub type TransportFactory<'a> = &'a dyn Fn() -> Box<dyn Transport>;
@@ -91,6 +101,7 @@ fn help_text() -> String {
         "  pack info <pack>                                          a pack's full manifest as JSON",
         "  pack validate <pack>                                      validate a pack's manifest as JSON",
         "  pack release-plan <pack> [--tag <t>]                      offline pack-release plan (version, provenance, tags) as JSON",
+        "  pack pull <pack> [--require-signature] [--no-verify] [--trusted-key <b64>]   verify + pull a signed release index",
         "  demo                                                      smoke-test the pipeline",
         "  version                                                   print the version",
         "",
@@ -199,15 +210,21 @@ fn parse_query_args(args: &[String]) -> Result<QueryArgs, String> {
     })
 }
 
+/// Validate a pack name as a single safe path segment (no traversal).
+fn validate_pack_name(pack: &str) -> Result<(), String> {
+    if pack.is_empty() || pack.contains('/') || pack.contains('\\') || pack == ".." {
+        return Err(format!("invalid pack name: {pack}"));
+    }
+    Ok(())
+}
+
 /// Resolve the database path for `pack`, confirming it exists.
 ///
 /// Ensures the packs directory itself exists first (best-effort) so the default
 /// XDG location is created on first use; a missing pack still surfaces a clear
 /// "database not found" error.
 fn resolve_db_path(packs_dir: &Path, pack: &str) -> Result<PathBuf, String> {
-    if pack.is_empty() || pack.contains('/') || pack.contains('\\') || pack == ".." {
-        return Err(format!("invalid pack name: {pack}"));
-    }
+    validate_pack_name(pack)?;
     kgpacks_packs::ensure_packs_dir(packs_dir);
     let db_path = packs_dir.join(pack).join(DB_FILENAME);
     if !db_path.exists() {
@@ -283,22 +300,25 @@ fn cmd_status(packs_dir: &Path) -> Result<String, String> {
 /// Ports the READ-PATH subset of `cli/src/commands/pack.ts` plus the offline
 /// projection of the release tooling (`scripts/release-pack.mjs`): the
 /// deterministic, network-free subcommands `list`, `info`, `validate`, and
-/// `release-plan`. The byte-level packaging + `gh` upload behind `release-plan`,
-/// and the write/network subcommands (`install`, `pull`, `remove`) and the
-/// ingestion/eval verbs (`create`, `update`, `eval`) remain follow-ups (issue
-/// #13), consistent with the Rust port being the read-path subset of the
-/// TypeScript CLI.
+/// `release-plan`, plus WS7 (#22) `pull`, which verifies the release-index
+/// Ed25519 signature (fail-closed) before trusting it. The byte-level packaging
+/// and `gh` upload behind `release-plan`, the remaining write/network
+/// subcommands (`install`, `remove`) and the ingestion/eval verbs (`create`,
+/// `update`, `eval`) remain follow-ups (issue #13), consistent with the Rust
+/// port being the read-path subset of the TypeScript CLI.
 fn cmd_pack(packs_dir: &Path, args: &[String]) -> Result<String, String> {
     match args.first().map(String::as_str) {
         Some("list") => cmd_pack_list(packs_dir),
         Some("info") => cmd_pack_info(packs_dir, args.get(1)),
         Some("validate") => cmd_pack_validate(packs_dir, args.get(1)),
         Some("release-plan") => cmd_pack_release_plan(packs_dir, &args[1..]),
+        Some("pull") => cmd_pack_pull(packs_dir, &args[1..]),
         Some(other) => Err(format!(
-            "unknown pack subcommand: {other} (expected: list, info, validate, release-plan)"
+            "unknown pack subcommand: {other} (expected: list, info, validate, release-plan, pull)"
         )),
         None => Err(
-            "missing pack subcommand (expected: list, info, validate, release-plan)".to_string(),
+            "missing pack subcommand (expected: list, info, validate, release-plan, pull)"
+                .to_string(),
         ),
     }
 }
@@ -538,6 +558,167 @@ fn cmd_ask(
     serde_json::to_string_pretty(&json).map_err(|e| e.to_string())
 }
 
+/// Flags parsed for `pack pull`.
+struct PullArgs {
+    pack: String,
+    require_signature: bool,
+    no_verify: bool,
+    trusted_key: Option<String>,
+}
+
+fn parse_pull_args(args: &[String]) -> Result<PullArgs, String> {
+    let mut positionals: Vec<String> = Vec::new();
+    let mut require_signature = false;
+    let mut no_verify = false;
+    let mut trusted_key: Option<String> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--require-signature" => {
+                require_signature = true;
+                i += 1;
+            }
+            "--no-verify" => {
+                no_verify = true;
+                i += 1;
+            }
+            "--trusted-key" => {
+                let raw = args
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --trusted-key".to_string())?;
+                trusted_key = Some(raw.clone());
+                i += 2;
+            }
+            other => {
+                positionals.push(other.to_string());
+                i += 1;
+            }
+        }
+    }
+
+    let pack = positionals
+        .into_iter()
+        .next()
+        .ok_or_else(|| "missing <pack> argument".to_string())?;
+    Ok(PullArgs {
+        pack,
+        require_signature,
+        no_verify,
+        trusted_key,
+    })
+}
+
+/// Resolve the trusted release public key: `--trusted-key` flag wins, then the
+/// `KGPACKS_TRUSTED_RELEASE_KEY` env var, else the committed trusted key.
+fn resolve_trusted_key(flag: &Option<String>) -> Result<[u8; 32], String> {
+    if let Some(raw) = flag {
+        return decode_public_key(raw).map_err(|e| e.to_string());
+    }
+    if let Ok(raw) = std::env::var(TRUSTED_KEY_ENV) {
+        return decode_public_key(&raw).map_err(|e| e.to_string());
+    }
+    Ok(trusted_release_public_key())
+}
+
+/// `pack pull <pack>` — verify the release index signature, then "pull".
+///
+/// Applies the fail-closed signature policy over the RAW release-index bytes
+/// (verify-before-parse), hard-failing on a tampered/untrusted signature or on a
+/// missing signature under `--require-signature`. On Verify/Warn/Skip it then
+/// does a minimal, format-agnostic parse of the index (well-formed JSON), so the
+/// verification composes additively with the WS3 release-index schema.
+fn cmd_pack_pull(packs_dir: &Path, args: &[String]) -> Result<String, String> {
+    let parsed = parse_pull_args(args)?;
+    // Mutually-exclusive flags are a usage error, checked before any I/O.
+    validate_signature_flags(parsed.require_signature, parsed.no_verify)
+        .map_err(|e| e.to_string())?;
+    validate_pack_name(&parsed.pack)?;
+
+    let trusted_key = resolve_trusted_key(&parsed.trusted_key)?;
+
+    let index_path = packs_dir.join(pack_release_filename(&parsed.pack));
+    if !index_path.exists() {
+        return Err(format!(
+            "release index not found at {}",
+            index_path.display()
+        ));
+    }
+    let index_bytes = std::fs::read(&index_path)
+        .map_err(|e| format!("cannot read release index at {}: {e}", index_path.display()))?;
+
+    let sig_path = packs_dir.join(pack_release_signature_filename(&parsed.pack));
+    let present = sig_path.exists();
+
+    // Compute validity by verifying the RAW bytes before any parse. A malformed
+    // or wrong-length sidecar counts as an invalid (not absent) signature so the
+    // policy fails closed rather than silently downgrading to integrity-only.
+    // Under `--no-verify` we never touch the sidecar — skipping means skipping,
+    // so an unreadable sidecar must not turn a `--no-verify` pull into an error.
+    let valid = if present && !parsed.no_verify {
+        let sig_raw = std::fs::read_to_string(&sig_path)
+            .map_err(|e| format!("cannot read signature sidecar: {e}"))?;
+        match PackIndexSignature::from_json_str(&sig_raw)
+            .and_then(|sidecar| sidecar.signature_array())
+        {
+            Ok(sig) => verify_pack_index_signature(&index_bytes, &sig, &trusted_key),
+            Err(_) => false,
+        }
+    } else {
+        false
+    };
+
+    let plan = signature_plan(SignatureInputs {
+        present,
+        valid,
+        require_signature: parsed.require_signature,
+        no_verify: parsed.no_verify,
+    });
+
+    let policy = match plan {
+        SignaturePlan::Verify => "verify",
+        SignaturePlan::Fail => "fail",
+        SignaturePlan::Warn => "warn",
+        SignaturePlan::Skip => "skip",
+    };
+
+    if plan == SignaturePlan::Fail {
+        return Err(if present {
+            format!(
+                "signature verification failed for \"{}\" release index (fail-closed)",
+                parsed.pack
+            )
+        } else {
+            format!(
+                "\"{}\" release index is unsigned but --require-signature was set",
+                parsed.pack
+            )
+        });
+    }
+
+    // Verify-before-parse: only now, on a Verify/Warn/Skip outcome, interpret
+    // the index bytes. This stays format-agnostic — any well-formed JSON index
+    // is accepted, regardless of the WS3 schema details.
+    let index: serde_json::Value = serde_json::from_slice(&index_bytes)
+        .map_err(|e| format!("release index is not valid JSON: {e}"))?;
+
+    let json = serde_json::json!({
+        "command": "pull",
+        "pack": parsed.pack,
+        "signature": {
+            "present": present,
+            "verified": plan == SignaturePlan::Verify,
+            "policy": policy,
+        },
+        "index": {
+            "name": index.get("name").and_then(serde_json::Value::as_str),
+            "format": index.get("format").and_then(serde_json::Value::as_str),
+        },
+        "status": "ok",
+    });
+    serde_json::to_string_pretty(&json).map_err(|e| e.to_string())
+}
+
 /// Wire the full pack -> ingest -> retrieve -> eval flow end to end (M1 stubs).
 fn demo() -> String {
     let mut store = GraphStore::open_in_memory();
@@ -582,6 +763,7 @@ mod tests {
         assert!(out.contains("pack info"));
         assert!(out.contains("pack validate"));
         assert!(out.contains("pack release-plan"));
+        assert!(out.contains("pack pull"));
     }
 
     #[test]
@@ -925,6 +1107,30 @@ mod tests {
             .collect();
         // localeCompare order: lowercase before uppercase; `_` before `-`.
         assert_eq!(order, ["alpha", "Alpha", "my_pack", "my-pack"]);
+    }
+
+    #[test]
+    fn parse_pull_args_reads_flags_and_positional() {
+        let parsed = parse_pull_args(&args_vec(&[
+            "acme",
+            "--require-signature",
+            "--trusted-key",
+            "AAAA",
+        ]))
+        .unwrap();
+        assert_eq!(parsed.pack, "acme");
+        assert!(parsed.require_signature);
+        assert!(!parsed.no_verify);
+        assert_eq!(parsed.trusted_key.as_deref(), Some("AAAA"));
+    }
+
+    #[test]
+    fn parse_pull_args_requires_a_pack() {
+        assert!(parse_pull_args(&args_vec(&["--no-verify"])).is_err());
+    }
+
+    fn args_vec(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
     }
 
     #[test]
