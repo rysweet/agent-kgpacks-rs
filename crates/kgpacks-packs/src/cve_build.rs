@@ -54,9 +54,11 @@ pub const DEFAULT_QUEUE_CAPACITY: usize = 2;
 pub struct BuildParams {
     /// Corpus source identifier (e.g. a path or fetch URL).
     pub src: String,
-    /// Publication-year filter, if any.
+    /// Publication-year filter: when set, only records whose `published_year`
+    /// equals it are loaded (records of other/unknown years are skipped).
     pub year: Option<i64>,
-    /// Maximum number of records to load, if capped.
+    /// Cap on the number of **corpus records considered** (a prefix of the
+    /// corpus); the year filter then applies within that prefix.
     pub limit: Option<usize>,
     /// Records loaded (and checkpointed) per batch.
     pub batch: usize,
@@ -232,8 +234,10 @@ where
         (Some(cp), true) if cp.params_hash == params_hash && graph_exists => Some(cp.clone()),
         (Some(_), _) => {
             // Params changed, resume not requested, or the store is gone:
-            // clean restart (wipe any partial store + the stale sidecar).
-            remove_store(&graph_path);
+            // clean restart (wipe any partial store + the stale sidecar). Remove
+            // the store *before* clearing the sidecar so a failed wipe cannot
+            // leave an orphaned store with no checkpoint.
+            remove_store(&graph_path)?;
             BuildCheckpoint::clear(&cp_path)?;
             None
         }
@@ -263,7 +267,11 @@ where
             db = Database::open_with_options(&graph_path, bulk_rw_options())?;
             loaded = existing_ids(&db, "MATCH (a:Article) RETURN a.title AS id")?;
             entities_seen = existing_ids(&db, "MATCH (e:Entity) RETURN e.entity_id AS id")?;
-            counts = cp.counts;
+            // Trust the store, not the sidecar, for counts: if the process died
+            // after a batch committed but before its checkpoint was written, the
+            // store is ahead of `cp.counts`. Reading live counts keeps the
+            // resumed run's progress accurate.
+            counts = live_counts(&db)?;
             offset = cp.source_offset;
             committed_batches = cp.last_committed_batch;
             resumed = true;
@@ -278,6 +286,17 @@ where
                     conn.run(&ddl)?;
                 }
             }
+            // Write the checkpoint up front (before the first batch) so that even
+            // a crash after the very first batch commits — but before its own
+            // checkpoint write — still leaves a resumable sidecar next to the
+            // store instead of an orphaned, un-resumable graph.
+            BuildCheckpoint {
+                params_hash: params_hash.clone(),
+                last_committed_batch: 0,
+                source_offset: 0,
+                counts: BuildCounts::default(),
+            }
+            .save(&cp_path)?;
             loaded = HashSet::new();
             entities_seen = HashSet::new();
             counts = BuildCounts::default();
@@ -293,6 +312,7 @@ where
     let start_batch = committed_batches;
     let batch_size = params.batch;
     let with_relations = params.with_entity_relations;
+    let year_filter = params.year;
     let (tx, rx) = sync_channel::<EmbeddedBatch>(options.queue_capacity);
 
     let interrupted = std::thread::scope(|scope| -> Result<bool> {
@@ -305,6 +325,13 @@ where
                 let mut items = Vec::with_capacity(end - o);
                 for i in o..end {
                     if let Some(record) = corpus.record(i) {
+                        // Publication-year filter: skip records that don't match
+                        // (the raw offset still advances, so resume stays exact).
+                        if let Some(year) = year_filter {
+                            if record.published_year != Some(year) {
+                                continue;
+                            }
+                        }
                         let vector = embedder.embed(&record.description);
                         items.push((record, vector));
                     }
@@ -330,6 +357,15 @@ where
         {
             let conn = db.connect()?;
             for batch in rx {
+                // Interrupt BEFORE loading this batch, so `Some(0)` commits
+                // nothing and `Some(n)` commits exactly n batches (the received
+                // batch is left for a later resume).
+                if let Some(stop_after) = options.interrupt_after_batches {
+                    if committed_batches >= stop_after {
+                        interrupted = true;
+                        break;
+                    }
+                }
                 if let Err(err) = load_batch(
                     &conn,
                     &batch,
@@ -353,13 +389,6 @@ where
                     counts,
                 }
                 .save(&cp_path)?;
-
-                if let Some(stop_after) = options.interrupt_after_batches {
-                    if committed_batches >= stop_after {
-                        interrupted = true;
-                        break;
-                    }
-                }
             }
         }
         // `rx` is dropped with the block above, unblocking the producer if it is
@@ -605,11 +634,22 @@ fn counts_to_stats(counts: &BuildCounts) -> BTreeMap<String, f64> {
     stats
 }
 
-/// Best-effort removal of a graph store and its WAL sidecar.
-fn remove_store(graph_path: &Path) {
-    let _ = std::fs::remove_file(graph_path);
+/// Remove a graph store and its WAL sidecar. A missing file is fine (nothing to
+/// remove); any other I/O error is surfaced so a clean restart never silently
+/// proceeds on top of a store it failed to delete.
+fn remove_store(graph_path: &Path) -> Result<()> {
+    remove_file_if_present(graph_path)?;
     let wal = graph_path.with_file_name(format!("{GRAPH_STORE_FILENAME}.wal"));
-    let _ = std::fs::remove_file(wal);
+    remove_file_if_present(&wal)?;
+    Ok(())
+}
+
+fn remove_file_if_present(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(PacksError::Io(err)),
+    }
 }
 
 #[cfg(test)]

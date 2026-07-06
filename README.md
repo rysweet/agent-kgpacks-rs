@@ -242,8 +242,8 @@ kgpacks build cve --corpus ./cve-corpus.json --out ./packs/cve --batch 500 --res
 | `--corpus <file.json>` | *(required)* | CVE corpus JSON (the #25 seam). |
 | `--out <dir>` | `<packs-dir>/<pack>` | Output pack directory. |
 | `--batch <n>` | `64` | Records loaded (and checkpointed) per batch. |
-| `--limit <n>` | *(all)* | Cap on the number of records loaded. |
-| `--year <y>` | *(none)* | Publication-year tag recorded in the params hash. |
+| `--limit <n>` | *(all)* | Cap on the number of corpus records considered (a prefix). |
+| `--year <y>` | *(none)* | Load only records whose `published_year` equals `y`. |
 | `--with-entity-relations` | off | Materialize `ENTITY_RELATION` edges. |
 | `--queue <n>` | `2` | Bound on embedded batches buffered between embed and load. |
 | `--pack-version <semver>` | `1.0.0` | Version written to the pack manifest. |

@@ -15,8 +15,8 @@ use std::thread::ThreadId;
 use kgpacks_db::{Database, DatabaseOptions, Value};
 use kgpacks_embeddings::{Embedder, EmbeddingModel, DEFAULT_DIM};
 use kgpacks_packs::{
-    build_cve_pack, checkpoint_path_for, BuildCheckpoint, BuildParams, CveEntity, CveRecord,
-    CveRelation, FixtureCorpus, PackManifest, PipelineOptions, GRAPH_STORE_FILENAME,
+    build_cve_pack, checkpoint_path_for, BuildCheckpoint, BuildCounts, BuildParams, CveEntity,
+    CveRecord, CveRelation, FixtureCorpus, PackManifest, PipelineOptions, GRAPH_STORE_FILENAME,
 };
 
 /// A corpus of `n` synthetic CVE records that deliberately **share** entities
@@ -341,6 +341,55 @@ fn resume_with_a_changed_params_hash_restarts_clean() {
 }
 
 #[test]
+fn year_filter_loads_only_matching_records() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pack_dir = dir.path().join("cve");
+    // A mixed-year corpus: 2 records in 2024, 3 in 2025, 1 with unknown year.
+    let mut records = Vec::new();
+    for (i, year) in [
+        Some(2024),
+        Some(2025),
+        Some(2024),
+        Some(2025),
+        None,
+        Some(2025),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut r = CveRecord::new(format!("CVE-2020-{i:04}"), format!("flaw {i}"));
+        r.published_year = year;
+        records.push(r);
+    }
+    let corpus = FixtureCorpus::new(records);
+
+    let report = build_cve_pack(
+        &pack_dir,
+        &PackManifest::new("cve", "1.0.0"),
+        &BuildParams {
+            src: "fixture".into(),
+            year: Some(2025),
+            limit: None,
+            batch: 2,
+            model: kgpacks_embeddings::DETERMINISTIC_MODEL.to_string(),
+            with_entity_relations: false,
+        },
+        &corpus,
+        &Embedder::new(DEFAULT_DIM),
+        &opts(false),
+    )
+    .expect("build");
+
+    // Only the three 2025 records are loaded; 2024 and unknown-year are skipped.
+    assert_eq!(report.counts.articles, 3);
+    let s = summarize(&pack_dir);
+    assert_eq!(
+        s.articles,
+        vec!["CVE-2020-0001", "CVE-2020-0003", "CVE-2020-0005"]
+    );
+}
+
+#[test]
 fn a_fresh_build_refuses_to_clobber_a_finished_pack() {
     let dir = tempfile::tempdir().expect("tempdir");
     let pack_dir = dir.path().join("cve");
@@ -502,7 +551,14 @@ fn duplicate_corpus_ids_are_loaded_once() {
     let report = build_cve_pack(
         &pack_dir,
         &PackManifest::new("cve", "1.0.0"),
-        &params("fixture", 2, false),
+        &BuildParams {
+            src: "fixture".into(),
+            year: None,
+            limit: None,
+            batch: 2,
+            model: kgpacks_embeddings::DETERMINISTIC_MODEL.to_string(),
+            with_entity_relations: false,
+        },
         &corpus,
         &Embedder::new(DEFAULT_DIM),
         &opts(false),
@@ -513,4 +569,108 @@ fn duplicate_corpus_ids_are_loaded_once() {
     assert_eq!(report.counts.articles, 2);
     let s = summarize(&pack_dir);
     assert_eq!(s.articles, vec!["CVE-2025-0000", "CVE-2025-0001"]);
+}
+
+#[test]
+fn resume_recovers_when_the_store_is_ahead_of_the_checkpoint() {
+    // Simulates a crash where a batch committed to the store but the process
+    // died before its checkpoint write landed: the on-disk checkpoint lags the
+    // store. Resume must still finish correctly (no double-load, right counts).
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pack_dir = dir.path().join("cve");
+    let corpus = sample_corpus(10);
+    let p = params("fixture", 3, true);
+
+    build_cve_pack(
+        &pack_dir,
+        &PackManifest::new("cve", "1.0.0"),
+        &p,
+        &corpus,
+        &Embedder::new(DEFAULT_DIM),
+        &PipelineOptions {
+            interrupt_after_batches: Some(2), // store has 6 records committed
+            ..opts(false)
+        },
+    )
+    .expect("partial build");
+
+    // Rewind the checkpoint to lag the store by one batch (store: 6 records at
+    // offset 6; checkpoint now claims only 3 at offset 3, with stale counts).
+    let cp_path = checkpoint_path_for(pack_dir.join(GRAPH_STORE_FILENAME));
+    let mut cp = BuildCheckpoint::load(&cp_path).expect("checkpoint");
+    cp.last_committed_batch = 1;
+    cp.source_offset = 3;
+    cp.counts = BuildCounts {
+        articles: 3,
+        entities: 0,
+        relationships: 0,
+    };
+    cp.save(&cp_path).expect("rewind checkpoint");
+
+    // Resume: the already-committed records at offsets 3..6 are skipped via the
+    // DB-rebuilt dedup set, the rest load once, and the pack completes.
+    build_cve_pack(
+        &pack_dir,
+        &PackManifest::new("cve", "1.0.0"),
+        &p,
+        &corpus,
+        &Embedder::new(DEFAULT_DIM),
+        &opts(true),
+    )
+    .expect("resume");
+
+    let s = summarize(&pack_dir);
+    assert_eq!(s.articles.len(), 10);
+    let unique: HashSet<&String> = s.articles.iter().collect();
+    assert_eq!(
+        unique.len(),
+        10,
+        "no duplicated records after a lagging resume"
+    );
+    assert_eq!(s.has_entity, 20);
+}
+
+#[test]
+fn a_store_is_never_left_without_a_checkpoint_until_clean_finish() {
+    // interrupt_after_batches = Some(0) commits nothing, yet the store and its
+    // checkpoint both exist (the checkpoint is written up front), so the build
+    // is resumable rather than an orphaned, un-resumable store.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pack_dir = dir.path().join("cve");
+    let corpus = sample_corpus(6);
+    let p = params("fixture", 2, false);
+
+    let report = build_cve_pack(
+        &pack_dir,
+        &PackManifest::new("cve", "1.0.0"),
+        &p,
+        &corpus,
+        &Embedder::new(DEFAULT_DIM),
+        &PipelineOptions {
+            interrupt_after_batches: Some(0),
+            ..opts(false)
+        },
+    )
+    .expect("zero-batch interrupt");
+
+    assert!(report.interrupted);
+    assert_eq!(report.batches_committed, 0);
+    let graph = pack_dir.join(GRAPH_STORE_FILENAME);
+    let cp_path = checkpoint_path_for(&graph);
+    assert!(graph.is_file(), "store exists");
+    assert!(cp_path.exists(), "a resumable checkpoint exists");
+    assert_eq!(summarize(&pack_dir).articles.len(), 0);
+
+    // And it resumes to a complete pack.
+    build_cve_pack(
+        &pack_dir,
+        &PackManifest::new("cve", "1.0.0"),
+        &p,
+        &corpus,
+        &Embedder::new(DEFAULT_DIM),
+        &opts(true),
+    )
+    .expect("resume from zero");
+    assert_eq!(summarize(&pack_dir).articles.len(), 6);
+    assert!(!cp_path.exists(), "checkpoint cleared on clean finish");
 }
