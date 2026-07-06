@@ -10,6 +10,7 @@
 
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
 use kgpacks_agent::{
     Transport, TransportError, TransportOpenConfig, TransportResponse, TransportSession, Usage,
@@ -121,109 +122,108 @@ fn argv(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|s| s.to_string()).collect()
 }
 
-/// Build a retrievable `name` pack under `packs_root` (i.e. at
-/// `packs_root/name/graph.lbug`).
-fn build_pack_in(packs_root: &Path, name: &str) {
-    let pack_dir = packs_root.join(name);
-    fs::create_dir_all(&pack_dir).expect("mkdir pack");
-    build_pack_db(&pack_dir.join("graph.lbug"));
+/// Extract the `packsDir` value the CLI reports from a `status` JSON blob.
+fn packs_dir_field(status_json: &str) -> &str {
+    let key = "\"packsDir\":";
+    let after = status_json
+        .split_once(key)
+        .unwrap_or_else(|| panic!("no packsDir in status output: {status_json}"))
+        .1;
+    let start = after.find('"').expect("packsDir opening quote") + 1;
+    let rest = &after[start..];
+    let end = rest.find('"').expect("packsDir closing quote");
+    &rest[..end]
 }
 
-/// Save/restore the packs-dir-resolution environment so mutating it inside a
-/// test never leaks to other tests. Only THIS test touches these vars, and the
-/// other e2e test passes an explicit `--packs-dir` (so it ignores the env), so
-/// there is no cross-test interference.
-struct EnvGuard {
-    saved: Vec<(&'static str, Option<String>)>,
-}
-
-impl EnvGuard {
-    fn capture(keys: &[&'static str]) -> Self {
-        let saved = keys
-            .iter()
-            .map(|&k| (k, std::env::var(k).ok()))
-            .collect::<Vec<_>>();
-        Self { saved }
-    }
-
-    fn set(&self, key: &str, value: &Path) {
-        std::env::set_var(key, value);
-    }
-
-    fn remove(&self, key: &str) {
-        std::env::remove_var(key);
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        for (key, value) in &self.saved {
-            match value {
-                Some(v) => std::env::set_var(key, v),
-                None => std::env::remove_var(key),
-            }
-        }
-    }
-}
-
-/// End-to-end proof of the WS4 packs-dir precedence: `--packs-dir` flag beats
-/// `KGPACKS_PACKS_DIR`, which beats the XDG default (`$XDG_DATA_HOME/kgpacks`).
-/// Each level's pack lives ONLY in that level's directory, so a successful
-/// `query` proves the resolver picked the right one (and a lower level's pack
-/// being *not found* proves the higher level overrode it).
+/// End-to-end proof of the WS4 packs-dir precedence, driven through the REAL
+/// `kgpacks` binary: `--packs-dir` flag beats `KGPACKS_PACKS_DIR`, which beats
+/// the XDG default (`$XDG_DATA_HOME/kgpacks`, else `$HOME/.local/share/kgpacks`).
+/// The `status` command reports the resolved `packsDir`, so each case asserts
+/// the winning directory (and, for the precedence cases, that the losing
+/// directory is not chosen).
+///
+/// Each invocation sets its environment on the CHILD [`Command`] and never
+/// mutates this test process's own environment. Mutating the shared process env
+/// (`set_var`/`remove_var`) would data-race the native `getenv` LadybugDB
+/// performs when the sibling e2e tests load their `~/.lbdb` extensions.
 #[test]
 fn cli_resolves_packs_dir_by_precedence() {
-    let _guard = EnvGuard::capture(&["KGPACKS_PACKS_DIR", "XDG_DATA_HOME"]);
-    let factory = || -> Box<dyn Transport> { Box::new(CiteFirstChunk) };
+    let bin = env!("CARGO_BIN_EXE_kgpacks");
+    let root = tempdir().expect("tempdir");
+    let flag_dir = root.path().join("flag");
+    let env_dir = root.path().join("env");
+    let xdg_home = root.path().join("xdg");
+    let home_dir = root.path().join("home");
 
-    // XDG default layout: $XDG_DATA_HOME/kgpacks holds `xdgpack` only.
-    let xdg = tempdir().expect("xdg tempdir");
-    let xdg_packs = xdg.path().join("kgpacks");
-    build_pack_in(&xdg_packs, "xdgpack");
-
-    // Env-override layout: $KGPACKS_PACKS_DIR holds `envpack` only.
-    let env_dir = tempdir().expect("env tempdir");
-    build_pack_in(env_dir.path(), "envpack");
-
-    // Flag-override layout: `--packs-dir` holds `flagpack` only.
-    let flag_dir = tempdir().expect("flag tempdir");
-    build_pack_in(flag_dir.path(), "flagpack");
-
-    let q = |extra: &[&str]| {
-        let mut parts = extra.to_vec();
-        parts.extend_from_slice(&["what is rust?", "-k", "5"]);
-        run_with_transport(&argv(&parts), &factory)
+    // Run `kgpacks <args> status` with `env_overrides` applied to the CHILD only
+    // (`None` removes the variable), returning the reported `packsDir`.
+    let packs_dir = |env_overrides: &[(&str, Option<&Path>)], args: &[&str]| -> String {
+        let mut cmd = Command::new(bin);
+        cmd.args(args).arg("status");
+        for (key, value) in env_overrides {
+            match value {
+                Some(path) => {
+                    cmd.env(key, path);
+                }
+                None => {
+                    cmd.env_remove(key);
+                }
+            }
+        }
+        let output = cmd.output().expect("run kgpacks status");
+        assert!(
+            output.status.success(),
+            "kgpacks status failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+        packs_dir_field(&stdout).to_string()
     };
 
-    // (1) XDG default: no flag, no env override -> resolves $XDG_DATA_HOME/kgpacks.
-    _guard.set("XDG_DATA_HOME", xdg.path());
-    _guard.remove("KGPACKS_PACKS_DIR");
-    let out = q(&["query", "xdgpack"]).expect("xdg-default query");
-    assert!(out.contains("\"s1\""), "xdg-default query: {out}");
+    let both_overrides = [
+        ("KGPACKS_PACKS_DIR", Some(env_dir.as_path())),
+        ("XDG_DATA_HOME", Some(xdg_home.as_path())),
+    ];
 
-    // (2) Env override beats the XDG default. `envpack` exists only in the env
-    // dir, and the XDG dir (still set) does NOT contain it — so success proves
-    // the env override won.
-    _guard.set("KGPACKS_PACKS_DIR", env_dir.path());
-    let out = q(&["query", "envpack"]).expect("env-override query");
-    assert!(out.contains("\"s1\""), "env-override query: {out}");
-    // Conversely, the XDG-only pack is now unreachable (env dir lacks it).
-    let err = q(&["query", "xdgpack"]).expect_err("env overrides xdg");
-    assert!(
-        err.contains("database not found"),
-        "env overrides xdg: {err}"
+    // (1) The `--packs-dir` flag wins over BOTH the env override and the XDG
+    // default (which are both set to different, losing directories).
+    let resolved = packs_dir(
+        &both_overrides,
+        &["--packs-dir", flag_dir.to_str().unwrap()],
+    );
+    assert_eq!(Path::new(&resolved), flag_dir, "flag beats env + xdg");
+
+    // (2) `KGPACKS_PACKS_DIR` wins over the XDG default (no flag).
+    let resolved = packs_dir(&both_overrides, &[]);
+    assert_eq!(Path::new(&resolved), env_dir, "env beats xdg default");
+
+    // (3) With no flag and no env override, the default is `$XDG_DATA_HOME/kgpacks`.
+    let resolved = packs_dir(
+        &[
+            ("KGPACKS_PACKS_DIR", None),
+            ("XDG_DATA_HOME", Some(xdg_home.as_path())),
+        ],
+        &[],
+    );
+    assert_eq!(
+        Path::new(&resolved),
+        xdg_home.join("kgpacks"),
+        "xdg default"
     );
 
-    // (3) The `--packs-dir` flag beats the env override. `flagpack` exists only
-    // under the flag dir; the env dir (still set) does not contain it.
-    let flag = flag_dir.path().to_str().unwrap();
-    let out = q(&["--packs-dir", flag, "query", "flagpack"]).expect("flag-override query");
-    assert!(out.contains("\"s1\""), "flag-override query: {out}");
-    // The env-only pack is unreachable through the flag dir.
-    let err = q(&["--packs-dir", flag, "query", "envpack"]).expect_err("flag overrides env");
-    assert!(
-        err.contains("database not found"),
-        "flag overrides env: {err}"
+    // (4) With XDG unset too, the default falls back to `$HOME/.local/share/kgpacks`.
+    let resolved = packs_dir(
+        &[
+            ("KGPACKS_PACKS_DIR", None),
+            ("XDG_DATA_HOME", None),
+            ("HOME", Some(home_dir.as_path())),
+        ],
+        &[],
+    );
+    assert_eq!(
+        Path::new(&resolved),
+        home_dir.join(".local").join("share").join("kgpacks"),
+        "home fallback default"
     );
 }
 
