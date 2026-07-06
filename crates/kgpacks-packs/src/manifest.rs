@@ -21,12 +21,13 @@ pub const MANIFEST_FILENAME: &str = "manifest.json";
 
 /// Keys reserved by the typed manifest fields; everything else is preserved as
 /// [`PackManifest::extra`].
-const KNOWN_KEYS: [&str; 5] = [
+const KNOWN_KEYS: [&str; 6] = [
     "name",
     "version",
     "description",
     "graph_stats",
     "eval_scores",
+    "provenance",
 ];
 
 /// Keys stripped to guard against prototype-pollution from untrusted manifests.
@@ -42,8 +43,8 @@ pub fn pack_name_re() -> &'static Regex {
 /// Metadata describing an installable knowledge pack.
 ///
 /// Mirrors the TypeScript `PackManifest`. `name` and `version` are required and
-/// validated; `description`, `graph_stats` and `eval_scores` are optional; any
-/// other keys are preserved verbatim in [`PackManifest::extra`].
+/// validated; `description`, `graph_stats`, `eval_scores` and `provenance` are
+/// optional; any other keys are preserved verbatim in [`PackManifest::extra`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct PackManifest {
     /// Pack name (must match [`pack_name_re`]).
@@ -56,6 +57,10 @@ pub struct PackManifest {
     pub graph_stats: Option<BTreeMap<String, f64>>,
     /// Optional evaluation scores; every value must be a finite number.
     pub eval_scores: Option<BTreeMap<String, f64>>,
+    /// Optional build-provenance block (`corpus` / `embedding` / `build`
+    /// sections). Validated for shape and stored deep-sanitized (unknown
+    /// sections and fields are preserved), mirroring the reference.
+    pub provenance: Option<Value>,
     /// Any additional (unknown) manifest keys, preserved verbatim.
     pub extra: BTreeMap<String, Value>,
 }
@@ -73,6 +78,7 @@ impl PackManifest {
             description: None,
             graph_stats: None,
             eval_scores: None,
+            provenance: None,
             extra: BTreeMap::new(),
         }
     }
@@ -95,6 +101,9 @@ impl PackManifest {
         }
         if let Some(eval_scores) = &self.eval_scores {
             map.insert("eval_scores".into(), number_map_to_value(eval_scores));
+        }
+        if let Some(provenance) = &self.provenance {
+            map.insert("provenance".into(), provenance.clone());
         }
         for (key, value) in &self.extra {
             // Never let a preserved `extra` key (e.g. an explicit null for an
@@ -154,6 +163,92 @@ fn validate_number_map(
     Ok(out)
 }
 
+/// Declared string fields per provenance section, ported from the reference
+/// `PROVENANCE_STRING_FIELDS`. A present (non-null) value for any of these must
+/// be a string; `null`/absent is allowed for undeterminable ones.
+const PROVENANCE_STRING_FIELDS: [(&str, &[&str]); 3] = [
+    ("corpus", &["name", "commit", "date"]),
+    ("embedding", &["model"]),
+    ("build", &["date", "tool_version"]),
+];
+
+/// Validate a manifest `provenance` block, porting the reference
+/// `validateProvenance` (`packages/packs/src/manifest.ts`).
+///
+/// The block itself must be an object; each present (non-null) section must be an
+/// object; every declared string field that is present must be a string; and
+/// `embedding.dimensions`, if present, must be a non-negative finite number.
+/// Undeterminable fields recorded as `null` (or absent) are allowed, and unknown
+/// sections/fields are tolerated (they are preserved, not validated).
+fn validate_provenance(value: &Value) -> Result<()> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| PacksError::ManifestValidation("provenance must be an object".into()))?;
+
+    for (section, fields) in PROVENANCE_STRING_FIELDS {
+        let sec = match object.get(section) {
+            None | Some(Value::Null) => continue,
+            Some(sec) => sec,
+        };
+        let sec_obj = sec.as_object().ok_or_else(|| {
+            PacksError::ManifestValidation(format!("provenance.{section} must be an object"))
+        })?;
+        for &field in fields {
+            match sec_obj.get(field) {
+                None | Some(Value::Null) | Some(Value::String(_)) => {}
+                Some(_) => {
+                    return Err(PacksError::ManifestValidation(format!(
+                        "provenance.{section}.{field} must be a string"
+                    )))
+                }
+            }
+        }
+    }
+
+    // `embedding.dimensions` (if present) must be a non-negative finite number.
+    // Reached only when `embedding` is a valid object (else the loop above
+    // already errored), matching the reference's `isPlainObject` guard.
+    if let Some(Value::Object(embedding)) = object.get("embedding") {
+        match embedding.get("dimensions") {
+            None | Some(Value::Null) => {}
+            Some(dimensions) => {
+                let valid = dimensions
+                    .as_f64()
+                    .is_some_and(|n| n.is_finite() && n >= 0.0);
+                if !valid {
+                    return Err(PacksError::ManifestValidation(
+                        "provenance.embedding.dimensions must be a non-negative finite number"
+                            .into(),
+                    ));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Recursively strip prototype-pollution keys (`__proto__`, `constructor`,
+/// `prototype`) from a JSON value at every nesting level, mirroring the
+/// reference `deepSanitize`. Applied to the nested `provenance` block so it is
+/// sanitized as deeply as the reference sanitizes it before it is preserved.
+fn deep_sanitize(value: &Value) -> Value {
+    match value {
+        Value::Array(items) => Value::Array(items.iter().map(deep_sanitize).collect()),
+        Value::Object(map) => {
+            let mut out = Map::new();
+            for (key, val) in map {
+                if DANGEROUS_KEYS.contains(&key.as_str()) {
+                    continue;
+                }
+                out.insert(key.clone(), deep_sanitize(val));
+            }
+            Value::Object(out)
+        }
+        other => other.clone(),
+    }
+}
+
 /// Validate an arbitrary JSON value as a [`PackManifest`].
 ///
 /// Errors with [`PacksError::ManifestValidation`] on any violation. Optional
@@ -204,6 +299,14 @@ pub fn validate_manifest(value: &Value) -> Result<PackManifest> {
         Some(value) => Some(validate_number_map("eval_scores", value, true)?),
     };
 
+    let provenance = match object.get("provenance") {
+        None | Some(Value::Null) => None,
+        Some(value) => {
+            validate_provenance(value)?;
+            Some(deep_sanitize(value))
+        }
+    };
+
     let mut extra = BTreeMap::new();
     for (key, value) in object {
         if DANGEROUS_KEYS.contains(&key.as_str()) {
@@ -213,7 +316,9 @@ pub fn validate_manifest(value: &Value) -> Result<PackManifest> {
             // Non-null known keys are represented by the typed fields above and
             // re-emitted by `to_value`. Preserve an explicit `null` for an
             // optional section (the reference re-emits `eval_scores: null`).
-            if value.is_null() && (key == "graph_stats" || key == "eval_scores") {
+            if value.is_null()
+                && (key == "graph_stats" || key == "eval_scores" || key == "provenance")
+            {
                 extra.insert(key.clone(), Value::Null);
             }
             continue;
@@ -227,6 +332,7 @@ pub fn validate_manifest(value: &Value) -> Result<PackManifest> {
         description,
         graph_stats,
         eval_scores,
+        provenance,
         extra,
     })
 }

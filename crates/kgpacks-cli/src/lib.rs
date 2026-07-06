@@ -80,6 +80,8 @@ fn dispatch(
         "version" | "--version" | "-V" => Ok(env!("CARGO_PKG_VERSION").to_string()),
         "demo" => Ok(demo()),
         "query" => cmd_query(&packs_dir, &rest[1..]),
+        "status" => cmd_status(&packs_dir),
+        "pack" => cmd_pack(&packs_dir, &rest[1..]),
         "ask" => cmd_ask(&packs_dir, &rest[1..], make_transport),
         other => Err(format!("unknown command: {other}")),
     }
@@ -90,6 +92,10 @@ fn help_text() -> String {
         "kgpacks <command> [--packs-dir <dir>]",
         "  query <pack> <question> [-k <n>] [--mode vector|hybrid]   ranked retrieval as JSON",
         "  ask   <pack> <question> [-k <n>] [--mode vector|hybrid] [--multidoc]   graph-RAG answer as JSON",
+        "  status                                                    installed packs summary as JSON",
+        "  pack list                                                 installed packs (name, version, description) as JSON",
+        "  pack info <pack>                                          a pack's full manifest as JSON",
+        "  pack validate <pack>                                      validate a pack's manifest as JSON",
         "  demo                                                      smoke-test the pipeline",
         "  version                                                   print the version",
     ]
@@ -236,8 +242,176 @@ fn cmd_query(packs_dir: &Path, args: &[String]) -> Result<String, String> {
     serde_json::to_string_pretty(&json).map_err(|e| e.to_string())
 }
 
-/// `ask <pack> <question>` — graph-RAG: retrieve, then synthesize a grounded
-/// answer via the agent. Prints the answer + citations + supporting hits as JSON.
+/// `status` — resolved packs directory plus a per-pack summary.
+///
+/// Ports `cli/src/commands/status.ts`: lists the installed packs under the
+/// resolved packs directory (a missing directory yields an empty list, never an
+/// error) and reports, for each, whether its LadybugDB graph store is present.
+/// Output is pretty JSON: `{ packsDir, count, packs: [{ name, version,
+/// dbPresent }] }`, with `packs` sorted by name via
+/// [`localecompare_pack_name`] (a faithful port of the reference's
+/// `name.localeCompare`).
+fn cmd_status(packs_dir: &Path) -> Result<String, String> {
+    let mut packs = kgpacks_packs::list_packs(packs_dir);
+    packs.sort_by(|a, b| localecompare_pack_name(&a.name, &b.name));
+
+    let json = serde_json::json!({
+        "packsDir": packs_dir.display().to_string(),
+        "count": packs.len(),
+        "packs": packs
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "name": p.name,
+                    "version": p.version,
+                    "dbPresent": p.path.join(DB_FILENAME).exists(),
+                })
+            })
+            .collect::<Vec<_>>(),
+    });
+    serde_json::to_string_pretty(&json).map_err(|e| e.to_string())
+}
+
+/// `pack <subcommand>` — read-path registry management.
+///
+/// Ports the READ-PATH subset of `cli/src/commands/pack.ts`: the deterministic,
+/// offline subcommands that only *read* the installed-pack registry —
+/// `list`, `info`, and `validate`. The write/network subcommands (`install`,
+/// `pull`, `remove`) and the ingestion/eval verbs (`create`, `update`, `eval`)
+/// remain follow-ups (issue #13), consistent with the Rust port being the
+/// read-path subset of the TypeScript CLI.
+fn cmd_pack(packs_dir: &Path, args: &[String]) -> Result<String, String> {
+    match args.first().map(String::as_str) {
+        Some("list") => cmd_pack_list(packs_dir),
+        Some("info") => cmd_pack_info(packs_dir, args.get(1)),
+        Some("validate") => cmd_pack_validate(packs_dir, args.get(1)),
+        Some(other) => Err(format!(
+            "unknown pack subcommand: {other} (expected: list, info, validate)"
+        )),
+        None => Err("missing pack subcommand (expected: list, info, validate)".to_string()),
+    }
+}
+
+/// `pack list` — the installed packs as `[{ name, version, description }]`.
+///
+/// Ports `pack list` from `cli/src/commands/pack.ts`: lists every pack under the
+/// resolved packs directory (a missing directory yields an empty list, never an
+/// error), projects each to `{ name, version, description }` (description
+/// defaulting to `""` when absent, mirroring the reference's
+/// `typeof … === 'string' ? … : ''`), and sorts by name via
+/// [`localecompare_pack_name`] (the same ICU-root order as `status`). Output is
+/// pretty JSON.
+fn cmd_pack_list(packs_dir: &Path) -> Result<String, String> {
+    let mut packs = kgpacks_packs::list_packs(packs_dir);
+    packs.sort_by(|a, b| localecompare_pack_name(&a.name, &b.name));
+
+    let json = serde_json::Value::Array(
+        packs
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "name": p.name,
+                    "version": p.version,
+                    "description": p.manifest.description.clone().unwrap_or_default(),
+                })
+            })
+            .collect(),
+    );
+    serde_json::to_string_pretty(&json).map_err(|e| e.to_string())
+}
+
+/// `pack info <pack>` — a pack's full manifest as pretty JSON.
+///
+/// Ports `pack info` from `cli/src/commands/pack.ts` (over `packs/registry.ts`
+/// `packInfo`): validates the pack name against `PACK_NAME_RE`, requires the
+/// pack's `manifest.json` to exist (else `pack not found`), then loads +
+/// validates the manifest and prints it in the canonical snake_case on-disk
+/// shape (`PackManifest::to_value`), at parity with the reference's
+/// `printJson(info.manifest)`.
+fn cmd_pack_info(packs_dir: &Path, name: Option<&String>) -> Result<String, String> {
+    let name = name.ok_or_else(|| "missing <pack> argument".to_string())?;
+    if !kgpacks_packs::pack_name_re().is_match(name) {
+        return Err(format!("invalid pack name: {name}"));
+    }
+    let dir = packs_dir.join(name);
+    if !kgpacks_packs::manifest_path_in(&dir).exists() {
+        return Err(format!("pack not found: {name}"));
+    }
+    let manifest = kgpacks_packs::load_manifest_from_dir(&dir).map_err(|e| e.to_string())?;
+    serde_json::to_string_pretty(&manifest.to_value()).map_err(|e| e.to_string())
+}
+
+/// `pack validate <pack>` — confirm a pack's manifest is valid.
+///
+/// Ports `pack validate` from `cli/src/commands/pack.ts`: resolves an existing
+/// pack directory (a name that fails `PACK_NAME_RE`, or a missing directory /
+/// `manifest.json`, is reported as `pack not found`), loads + validates the
+/// manifest (a schema violation surfaces as an error), and prints
+/// `{ valid: true, name, version }` on success.
+fn cmd_pack_validate(packs_dir: &Path, name: Option<&String>) -> Result<String, String> {
+    let name = name.ok_or_else(|| "missing <pack> argument".to_string())?;
+    if !kgpacks_packs::pack_name_re().is_match(name) {
+        return Err(format!("pack not found: {name}"));
+    }
+    let dir = packs_dir.join(name);
+    if !dir.is_dir() || !kgpacks_packs::manifest_path_in(&dir).exists() {
+        return Err(format!("pack not found: {name}"));
+    }
+    let manifest = kgpacks_packs::load_manifest_from_dir(&dir).map_err(|e| e.to_string())?;
+
+    let json = serde_json::json!({
+        "valid": true,
+        "name": manifest.name,
+        "version": manifest.version,
+    });
+    serde_json::to_string_pretty(&json).map_err(|e| e.to_string())
+}
+
+/// Compare two pack names the way the reference CLI's `name.localeCompare(...)`
+/// does, restricted to the ASCII pack-name character set (`PACK_NAME_RE`:
+/// `[a-zA-Z0-9_-]`).
+///
+/// JavaScript's `String.prototype.localeCompare` uses ICU collation. For this
+/// character set the ICU **root / `en-US`** order — which is deterministic and
+/// host-independent, unlike the reference's implicit host-default locale — has
+/// two effective levels:
+///
+/// * a case-insensitive **primary** order of `_` < `-` < digits < letters, and
+/// * a **case** tiebreak with lowercase before uppercase.
+///
+/// Because pack names are pure ASCII, no locale-specific casing (e.g. Turkish
+/// `i`/`İ`) can arise, so pinning to the root/`en-US` order is a faithful,
+/// deterministic port. Crucially the *entire* primary sequence is compared
+/// before any case difference, so e.g. `"Ab" < "ac"` (primary `b` < `c` wins
+/// over the uppercase `A`). A naive per-character `(primary, case)` tuple sort
+/// gets that wrong; this reproduces the level-by-level order exactly. It is
+/// verified against Node's real `localeCompare('en-US')` by the
+/// `qa/status-parity` harness (and a 200k-pair differential check).
+fn localecompare_pack_name(a: &str, b: &str) -> std::cmp::Ordering {
+    // Primary collation weight: case-folded, `_` < `-` < digits < letters. Any
+    // character outside a valid pack name (never produced here, since names pass
+    // `PACK_NAME_RE`) sorts after all known ones, deterministically by code
+    // point, so the comparator stays total.
+    fn primary(c: char) -> u32 {
+        match c {
+            '_' => 0,
+            '-' => 1,
+            '0'..='9' => 2 + (c as u32 - '0' as u32),
+            'a'..='z' => 12 + (c as u32 - 'a' as u32),
+            'A'..='Z' => 12 + (c as u32 - 'A' as u32),
+            other => 1000 + other as u32,
+        }
+    }
+    // Case (tertiary) weight: lowercase and non-letters before uppercase.
+    fn case_rank(c: char) -> u8 {
+        u8::from(c.is_ascii_uppercase())
+    }
+
+    a.chars()
+        .map(primary)
+        .cmp(b.chars().map(primary))
+        .then_with(|| a.chars().map(case_rank).cmp(b.chars().map(case_rank)))
+}
 fn cmd_ask(
     packs_dir: &Path,
     args: &[String],
@@ -331,6 +505,276 @@ mod tests {
         let out = run(&["help".to_string()]).unwrap();
         assert!(out.contains("query"));
         assert!(out.contains("ask"));
+        assert!(out.contains("status"));
+        assert!(out.contains("pack list"));
+        assert!(out.contains("pack info"));
+        assert!(out.contains("pack validate"));
+    }
+
+    #[test]
+    fn status_on_a_missing_packs_dir_is_empty() {
+        // A nonexistent packs directory is not an error: `status` reports zero
+        // packs (mirrors the reference, whose `listPacks` returns `[]`).
+        let out = cmd_status(Path::new("/no/such/packs/dir")).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(value["packsDir"], "/no/such/packs/dir");
+        assert_eq!(value["count"], 0);
+        assert_eq!(value["packs"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn status_lists_installed_packs_sorted_with_db_presence() {
+        use std::fs;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        // Two valid packs; only `zeta` has a graph store present.
+        let zeta = root.join("zeta");
+        fs::create_dir_all(&zeta).unwrap();
+        fs::write(
+            zeta.join("manifest.json"),
+            r#"{"name":"zeta","version":"2.0.0"}"#,
+        )
+        .unwrap();
+        fs::write(zeta.join(DB_FILENAME), b"").unwrap();
+
+        let alpha = root.join("alpha");
+        fs::create_dir_all(&alpha).unwrap();
+        fs::write(
+            alpha.join("manifest.json"),
+            r#"{"name":"alpha","version":"1.0.0"}"#,
+        )
+        .unwrap();
+
+        // A directory without a manifest is skipped.
+        fs::create_dir_all(root.join("not-a-pack")).unwrap();
+
+        let out = cmd_status(root).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+
+        assert_eq!(value["packsDir"], root.display().to_string());
+        assert_eq!(value["count"], 2);
+        let packs = value["packs"].as_array().unwrap();
+        assert_eq!(packs.len(), 2);
+        // Sorted by name: alpha before zeta.
+        assert_eq!(packs[0]["name"], "alpha");
+        assert_eq!(packs[0]["version"], "1.0.0");
+        assert_eq!(packs[0]["dbPresent"], false);
+        assert_eq!(packs[1]["name"], "zeta");
+        assert_eq!(packs[1]["version"], "2.0.0");
+        assert_eq!(packs[1]["dbPresent"], true);
+    }
+
+    #[test]
+    fn pack_list_projects_name_version_description_sorted() {
+        use std::fs;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        let a = root.join("alpha");
+        fs::create_dir_all(&a).unwrap();
+        fs::write(
+            a.join("manifest.json"),
+            r#"{"name":"alpha","version":"1.0.0","description":"the alpha pack"}"#,
+        )
+        .unwrap();
+
+        let z = root.join("zeta");
+        fs::create_dir_all(&z).unwrap();
+        // No description -> defaults to "".
+        fs::write(
+            z.join("manifest.json"),
+            r#"{"name":"zeta","version":"2.0.0"}"#,
+        )
+        .unwrap();
+
+        // Invalid manifest (missing version) -> skipped, never fatal.
+        let b = root.join("broken");
+        fs::create_dir_all(&b).unwrap();
+        fs::write(b.join("manifest.json"), r#"{"name":"broken"}"#).unwrap();
+
+        let out = cmd_pack_list(root).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let packs = value.as_array().unwrap();
+        assert_eq!(packs.len(), 2);
+        assert_eq!(packs[0]["name"], "alpha");
+        assert_eq!(packs[0]["version"], "1.0.0");
+        assert_eq!(packs[0]["description"], "the alpha pack");
+        assert_eq!(packs[1]["name"], "zeta");
+        // Absent description is the empty string, not null / missing.
+        assert_eq!(packs[1]["description"], "");
+    }
+
+    #[test]
+    fn pack_list_on_a_missing_packs_dir_is_empty() {
+        let out = cmd_pack_list(Path::new("/no/such/packs/dir")).unwrap();
+        assert_eq!(out, "[]");
+    }
+
+    #[test]
+    fn pack_info_prints_the_full_manifest_verbatim() {
+        use std::fs;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let dir = root.join("rich");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("manifest.json"),
+            r#"{"name":"rich","version":"1.2.3","description":"rich","graph_stats":{"articles":7,"size_mb":1.5},"unknown":"kept"}"#,
+        )
+        .unwrap();
+
+        let name = "rich".to_string();
+        let out = cmd_pack_info(root, Some(&name)).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(value["name"], "rich");
+        assert_eq!(value["version"], "1.2.3");
+        assert_eq!(value["graph_stats"]["articles"], 7);
+        assert_eq!(value["graph_stats"]["size_mb"], 1.5);
+        // Unknown keys survive the round-trip.
+        assert_eq!(value["unknown"], "kept");
+    }
+
+    #[test]
+    fn pack_info_missing_argument_and_missing_pack_error() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            cmd_pack_info(tmp.path(), None).unwrap_err(),
+            "missing <pack> argument"
+        );
+        let name = "ghost".to_string();
+        assert_eq!(
+            cmd_pack_info(tmp.path(), Some(&name)).unwrap_err(),
+            "pack not found: ghost"
+        );
+    }
+
+    #[test]
+    fn pack_info_rejects_an_invalid_name_before_touching_the_filesystem() {
+        let name = "../escape".to_string();
+        assert_eq!(
+            cmd_pack_info(Path::new("/no/such/root"), Some(&name)).unwrap_err(),
+            "invalid pack name: ../escape"
+        );
+    }
+
+    #[test]
+    fn pack_validate_accepts_valid_and_rejects_invalid() {
+        use std::fs;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        let good = root.join("good");
+        fs::create_dir_all(&good).unwrap();
+        fs::write(
+            good.join("manifest.json"),
+            r#"{"name":"good","version":"3.1.4"}"#,
+        )
+        .unwrap();
+
+        let name = "good".to_string();
+        let out = cmd_pack_validate(root, Some(&name)).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(value["valid"], true);
+        assert_eq!(value["name"], "good");
+        assert_eq!(value["version"], "3.1.4");
+
+        // Missing required `version` -> validation error surfaces.
+        let bad = root.join("bad");
+        fs::create_dir_all(&bad).unwrap();
+        fs::write(bad.join("manifest.json"), r#"{"name":"bad"}"#).unwrap();
+        let bad_name = "bad".to_string();
+        assert!(cmd_pack_validate(root, Some(&bad_name)).is_err());
+    }
+
+    #[test]
+    fn pack_validate_reports_a_traversal_name_as_not_found() {
+        // Both an invalid name and a missing directory are reported identically
+        // ("pack not found"), matching the reference's resolveExistingPackDir.
+        let traversal = "../secrets".to_string();
+        assert_eq!(
+            cmd_pack_validate(Path::new("/no/such/root"), Some(&traversal)).unwrap_err(),
+            "pack not found: ../secrets"
+        );
+        let missing = "ghost".to_string();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            cmd_pack_validate(tmp.path(), Some(&missing)).unwrap_err(),
+            "pack not found: ghost"
+        );
+    }
+
+    #[test]
+    fn pack_dispatch_rejects_bare_and_unknown_subcommands() {
+        assert!(cmd_pack(Path::new("/tmp"), &[])
+            .unwrap_err()
+            .contains("missing pack subcommand"));
+        assert!(cmd_pack(Path::new("/tmp"), &["install".to_string()])
+            .unwrap_err()
+            .contains("unknown pack subcommand: install"));
+    }
+
+    #[test]
+    fn localecompare_pack_name_matches_icu_primary_order() {
+        use std::cmp::Ordering;
+        // Primary order: `_` < `-` < digits < letters (case-insensitive).
+        assert_eq!(localecompare_pack_name("_x", "-x"), Ordering::Less); // `_` < `-`
+        assert_eq!(localecompare_pack_name("a_1", "a1"), Ordering::Less); // `_` < digit
+        assert_eq!(
+            localecompare_pack_name("my_pack", "my-pack"),
+            Ordering::Less
+        );
+        assert_eq!(localecompare_pack_name("9x", "ax"), Ordering::Less); // digit < letter
+        assert_eq!(localecompare_pack_name("apple", "banana"), Ordering::Less);
+    }
+
+    #[test]
+    fn localecompare_pack_name_case_tiebreak_is_lowercase_first() {
+        use std::cmp::Ordering;
+        // Equal ignoring case -> lowercase sorts first (ICU tertiary level).
+        assert_eq!(localecompare_pack_name("alpha", "Alpha"), Ordering::Less);
+        assert_eq!(localecompare_pack_name("Alpha", "alpha"), Ordering::Greater);
+        // But a primary difference dominates a case difference anywhere.
+        assert_eq!(localecompare_pack_name("Ab", "ac"), Ordering::Less);
+        assert_eq!(localecompare_pack_name("aB", "ab"), Ordering::Greater);
+    }
+
+    #[test]
+    fn localecompare_pack_name_orders_a_mixed_set_like_the_reference() {
+        // Same set + expected order as computed from Node's `localeCompare`
+        // (see qa/status-parity).
+        let mut names = ["alpha", "Alpha", "a1", "a_1", "my-pack", "my_pack", "bravo"];
+        names.sort_by(|a, b| localecompare_pack_name(a, b));
+        assert_eq!(
+            names,
+            ["a_1", "a1", "alpha", "Alpha", "bravo", "my_pack", "my-pack"]
+        );
+    }
+
+    #[test]
+    fn status_sorts_names_by_localecompare_not_codepoint() {
+        use std::fs;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        for name in ["alpha", "Alpha", "my-pack", "my_pack"] {
+            let dir = root.join(name);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("manifest.json"),
+                format!(r#"{{"name":"{name}","version":"1.0.0"}}"#),
+            )
+            .unwrap();
+        }
+        let out = cmd_status(root).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let order: Vec<&str> = value["packs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
+        // localeCompare order: lowercase before uppercase; `_` before `-`.
+        assert_eq!(order, ["alpha", "Alpha", "my_pack", "my-pack"]);
     }
 
     #[test]

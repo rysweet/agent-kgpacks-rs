@@ -13,13 +13,17 @@
 //!   [`MAX_SINGLE_ARTIFACT_BYTES`](release::MAX_SINGLE_ARTIFACT_BYTES).
 //! * [`sha256`] — a self-contained SHA-256 (no external crypto dependency)
 //!   backing the release index's per-part and overall content hashes.
+//! * [`registry`] — read-path queries over an install root
+//!   ([`list_packs`](registry::list_packs)), backing the CLI `status` command
+//!   (`packages/packs/src/registry.ts`).
 //!
-//! The registry, tarball installer and version resolution surfaces land in a
-//! later milestone.
+//! The tarball installer and version-resolution surfaces land in a later
+//! milestone.
 
 mod errors;
 pub mod manifest;
 pub mod pack;
+pub mod registry;
 pub mod release;
 pub mod sha256;
 pub mod versioning;
@@ -47,3 +51,5 @@ pub use release::{
 };
 
 pub use sha256::{sha256_hex, Sha256};
+
+pub use registry::{list_packs, InstalledPack};

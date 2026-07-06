@@ -77,16 +77,20 @@ impl<'c, 'db> LinkDiscovery<'c, 'db> {
         let next_depth = current_depth + 1;
         let mut new_articles = 0usize;
 
-        let valid_links: Vec<&String> = links.iter().filter(|l| Self::is_valid_link(l)).collect();
+        let valid_links: Vec<&str> = links
+            .iter()
+            .filter(|l| Self::is_valid_link(l))
+            .map(String::as_str)
+            .collect();
 
         // Batch the existence check and the existing-edge set (avoids N+1).
         let existing_articles = self.batch_article_exists(&valid_links)?;
         let existing_links = self.existing_links(source_title)?;
 
         for link in valid_links {
-            match existing_articles.get(link.as_str()) {
+            match existing_articles.get(link) {
                 Some(state) if EXISTING_STATES.contains(&state.as_str()) => {
-                    if !existing_links.contains(link.as_str()) {
+                    if !existing_links.contains(link) {
                         // Per-link best-effort, like the reference's
                         // `try: … except: continue` around each link.
                         let _ = self.create_link(source_title, link);
@@ -154,13 +158,16 @@ impl<'c, 'db> LinkDiscovery<'c, 'db> {
 
     /// Existence + state for many titles in a single query. Titles absent from
     /// the returned map do not exist. Parity with `_batch_article_exists`.
-    fn batch_article_exists(&self, titles: &[&String]) -> Result<HashMap<String, String>> {
+    fn batch_article_exists(&self, titles: &[&str]) -> Result<HashMap<String, String>> {
         if titles.is_empty() {
             return Ok(HashMap::new());
         }
         let list = Value::List(
             LogicalType::String,
-            titles.iter().map(|t| Value::String((*t).clone())).collect(),
+            titles
+                .iter()
+                .map(|t| Value::String((*t).to_string()))
+                .collect(),
         );
         let rows = self.conn.run_params(
             "MATCH (a:Article) WHERE a.title IN $titles \

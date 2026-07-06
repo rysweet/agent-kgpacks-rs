@@ -1,0 +1,8 @@
+Alpha	0	The quick brown fox jumps over the lazy dog and then keeps running.
+Alpha	1	short
+Beta	0	абвгдеёжзийклмнопрстуфхцчшщ
+Gamma	0	﻿leading bom is trimmed away here
+Gamma	1	kept nel
+Delta	0	aa  bb  cc  dd  ee  ff  gg  hh  ii  
+Epsilon	0	alpha	beta gamma delta epsilon zeta
+Zeta	0	path C:\dir keeps backslashes intact ok

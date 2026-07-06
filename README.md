@@ -17,7 +17,8 @@ engine, RustyClawd / Copilot SDK for the agent).
 > seam, wired to the real RustyClawd / Copilot backend behind the `copilot`
 > feature. `kgpacks-query` adds the agent-grounded **graph-RAG query**
 > (`retrieve_and_synthesize`), and `kgpacks-cli` surfaces it end to end: `query`
-> prints ranked retrieval and `ask` prints a grounded, citation-bearing answer.
+> prints ranked retrieval, `ask` prints a grounded, citation-bearing answer, and
+> `status` reports the installed packs.
 > See the [roadmap](#porting-roadmap-m1m5) for what lands when.
 
 ## Target flow
@@ -88,7 +89,8 @@ workspace. As of M2, `kgpacks-db` consumes `lbug`; the others remain stubs.
   manifest schema + SemVer versioning and builds/loads a pack over the graph
   store. Vector/FTS indexing is deferred to M4.
 - **M3 — Ingestion + embeddings (landed).** `kgpacks-embeddings` ports the
-  sentence-aware chunker and an embedding generator (a deterministic,
+  fixed-window chunker (chunk size/overlap, id format, and windowing at parity
+  with `agent-kgpacks-ts`) and an embedding generator (a deterministic,
   retrieval-contract-preserving model standing in for the BGE transformer so CI
   stays hermetic), and `kgpacks-ingestion` ports the working-store schema,
   pluggable content sources, LLM-extraction sanitization (gated behind a
@@ -110,7 +112,9 @@ workspace. As of M2, `kgpacks-db` consumes `lbug`; the others remain stubs.
   all behind an injectable `Transport` seam, with the real RustyClawd /
   Copilot-SDK adapter behind the `copilot` feature. `kgpacks-query` adds the
   agent-grounded graph-RAG query `retrieve_and_synthesize` (retrieval → grounded
-  synthesis), and `kgpacks-cli` surfaces the flow (`query` / `ask`). The broader
+  synthesis), and `kgpacks-cli` surfaces the flow (`query` / `ask`) plus the
+  read-path `status` command (installed-pack summary) and the read-path `pack`
+  subcommands (`list` / `info` / `validate`). The broader
   retrieval ENHANCEMENTS layer (cross-encoder, few-shot, Cypher-RAG, multi-doc
   synthesis), the `kgpacks-mcp` / `kgpacks-backend` HTTP surfaces, and the
   `parity/` harness remain follow-ups beyond this core flow.
@@ -186,6 +190,20 @@ build_pack("/tmp/rust-expert", &manifest, &content)?;
 let loaded = load_pack("/tmp/rust-expert")?;
 assert_eq!(loaded.graph_stats()?["articles"], 1.0);
 ```
+
+`validate_manifest` (the single schema gate behind `load_manifest` /
+`load_manifest_from_dir` / `build_pack` / `save_manifest`) is at full parity with
+the reference `validateManifest`: beyond `name`/`version`/`description` and the
+optional `graph_stats`/`eval_scores` blocks, it validates the optional build
+`provenance` block (`corpus` / `embedding` / `build` sections — declared string
+fields must be strings, `embedding.dimensions` must be a non-negative finite
+number) and deep-sanitizes it against prototype-pollution keys, mirroring
+`packages/packs/src/manifest.ts`. A manifest carrying a malformed `provenance`
+block is therefore rejected (and such a pack is skipped by `registry::list_packs`
+/ the `status` command) exactly as the reference rejects it. Cross-checked by
+`qa/manifest-provenance-parity`, which diffs the Rust `status` listing against a
+live-run JS reference oracle that mirrors the TypeScript `validateManifest`
+semantics over the same fixtures.
 
 ### Multi-part release + linear-scaling loader (WS5)
 
@@ -265,7 +283,7 @@ a Rust module proven by a mirroring parity test:
 
 | Reference (`agent-kgpacks`)              | Rust module                              | Parity test                          |
 | ---------------------------------------- | ---------------------------------------- | ------------------------------------ |
-| `embeddings/chunker.py`                  | `kgpacks-embeddings::chunker`            | `kgpacks-embeddings/tests/chunker.rs` |
+| `ingestion/src/chunking.ts` (TS parity)  | `kgpacks-embeddings::chunker`            | `kgpacks-embeddings/tests/chunker.rs` |
 | `embeddings/generator.py`                | `kgpacks-embeddings` (`Embedder`)        | `kgpacks-embeddings/tests/generator.rs` |
 | `extraction/llm_extractor.py`            | `kgpacks-ingestion::extraction`          | `kgpacks-ingestion/tests/extraction.rs` |
 | `expansion/link_discovery.py`            | `kgpacks-ingestion::link_discovery`      | `kgpacks-ingestion/tests/link_discovery.rs` |
@@ -386,7 +404,16 @@ the suite is fully offline.
 `kgpacks-query::retrieve_and_synthesize` is the **graph-RAG query**: it runs M4
 retrieval, hands the ranked sections to the agent as citation-tagged context,
 and returns the grounded answer plus its supporting hits. `kgpacks-cli` surfaces
-it (`query` → ranked JSON, `ask` → grounded answer JSON).
+it (`query` → ranked JSON, `ask` → grounded answer JSON). The read-path `status`
+command reports the resolved packs directory and the installed packs as JSON
+(`{ packsDir, count, packs: [{ name, version, dbPresent }] }`, sorted by name),
+backed by `kgpacks-packs::registry::list_packs`. The read-path subset of the
+reference `pack` command group is also ported — `pack list`
+(`[{ name, version, description }]`, sorted by name), `pack info <pack>` (the
+pack's full manifest), and `pack validate <pack>` (`{ valid, name, version }`) —
+over the same `kgpacks-packs` registry/manifest APIs. The write/network `pack`
+subcommands (`install`/`pull`/`remove`) and the ingestion/eval verbs
+(`create`/`update`/`eval`) remain follow-ups (issue #13).
 
 Each reference module maps to a Rust module proven by a mirroring parity test:
 
@@ -399,16 +426,36 @@ Each reference module maps to a Rust module proven by a mirroring parity test:
 | `agent/src/{prompts,errors,constants}.ts`     | `kgpacks-agent::{prompts,errors,constants}`  | exercised by the above               |
 | `query/src/retriever.ts` `retrieveAndSynthesize` | `kgpacks-query::synthesis`                | `query/tests/synthesis.rs`           |
 | `cli/src/commands/query.ts` (+ `ask` flow)    | `kgpacks-cli` (`query` / `ask`)              | `cli/tests/e2e.rs`, unit tests       |
+| `cli/src/commands/status.ts` (+ `packs/registry.ts` `listPacks`) | `kgpacks-cli` (`status`) + `kgpacks-packs::registry::list_packs` | `cli/tests/e2e.rs`, `qa/status-parity/` |
+| `cli/src/commands/pack.ts` (read-path: `list`/`info`/`validate`) | `kgpacks-cli` (`pack list`/`info`/`validate`) over `kgpacks-packs::{registry,manifest}` | `cli/tests/e2e.rs`, unit tests, `qa/pack-parity/` |
 
 The agent parity suite mirrors the reference's `agent/test/*` structurally
 (valid shapes, fence-stripping, citation derivation, usage accounting,
 lifecycle, fail-closed errors) against a mock transport, and the CLI `e2e` test
 drives the full `build pack → vector retrieval → graph-RAG query` flow through
-the actual command surface offline. Scope notes: the real transport is gated
+the actual command surface offline. The `status` command additionally ships a
+cross-implementation parity harness (`qa/status-parity/`, driven by the
+`status-ts-parity` qa-team scenario) that diffs the Rust payload against a live
+`agent-kgpacks-ts` reference oracle; the read-path `pack` subcommands ship an
+equivalent harness (`qa/pack-parity/`, driven by the `pack-ts-parity` scenario)
+that diffs `pack list`/`info`/`validate` against the same live reference. Scope
+notes: the real transport is gated
 behind the non-default `copilot` feature (compiled + linted in a dedicated CI
-step) so the default gates stay lean and hermetic; the retrieval ENHANCEMENTS
-layer, the MCP/backend HTTP surfaces, and the `parity/` harness remain
-follow-ups beyond this core flow.
+step) so the default gates stay lean and hermetic; the remaining write/eval CLI
+path (`create`/`update`, `research-sources`, the write/network `pack`
+subcommands, and `eval`; issue #13), the retrieval ENHANCEMENTS layer, the
+MCP/backend HTTP surfaces, and the `parity/` harness remain follow-ups beyond
+this core flow.
+
+## Quality audit
+
+The repository is maintained under a **Ten-Wave Quality Audit** — a repeatable,
+agent-driven process that runs ten `SEEK → VALIDATE → FIX` waves across
+correctness, memory safety, error handling, idiomatic Rust, test
+coverage/quality, and M1–M5 parity with the TypeScript reference. Every fix PR is
+gated behind CI **and** an explicit proxy review from the `crusty-old-engineer`
+reviewer. See [`docs/quality-audit/`](docs/quality-audit/README.md) for the
+usage, reference, configuration, and worked examples.
 
 ## License
 
