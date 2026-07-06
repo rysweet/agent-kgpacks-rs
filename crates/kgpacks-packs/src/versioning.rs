@@ -157,3 +157,63 @@ pub fn sort_versions(versions: &[&str]) -> Result<Vec<String>> {
 pub fn latest_version(versions: &[&str]) -> Result<Option<String>> {
     Ok(sort_versions(versions)?.pop())
 }
+
+/// Dated release-tag suffix: `<name>-YYYY.MM[.N]`. The month is zero-padded in
+/// the tag (for readable, lexically-sortable tags); the derived SemVer core must
+/// NOT pad it (SemVer 2.0 forbids leading zeros in the numeric core). Anchored
+/// at the end and bounded ⇒ ReDoS-safe.
+fn release_tag_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"-(\d{4})\.(\d{2})(?:\.(\d+))?$").expect("valid RELEASE_TAG_RE"))
+}
+
+/// Derive an (unpadded) SemVer 2.0 pack version from an immutable dated release
+/// tag: `cve-2025.06` → `2025.6.0`, `cve-2025.06.1` → `2025.6.1`.
+///
+/// Ports `packVersionFromReleaseTag` (`packages/packs/src/versioning.ts`): the
+/// month is zero-padded in the tag but the derived version drops the pad. Errors
+/// with [`PacksError::ManifestValidation`] for a tag that carries no dated
+/// version (e.g. the `packs` latest-pointer, `cve`, `cve-latest`, or an empty
+/// string) or whose month is outside `01`–`12`.
+pub fn pack_version_from_release_tag(tag: &str) -> Result<String> {
+    let captures = release_tag_re().captures(tag).ok_or_else(|| {
+        PacksError::ManifestValidation(format!(
+            "release tag {tag:?} carries no dated version (expected <name>-YYYY.MM[.N])"
+        ))
+    })?;
+
+    // The numeric core groups are bounded (`\d{4}`, `\d{2}`) or arbitrarily long
+    // (`\d+` for the optional patch, which is untrusted): parse fallibly so an
+    // over-long patch fails cleanly rather than panicking.
+    let component = |index: usize| -> Result<u64> {
+        captures
+            .get(index)
+            .map(|m| m.as_str())
+            .unwrap_or("0")
+            .parse::<u64>()
+            .map_err(|_| {
+                PacksError::ManifestValidation(format!(
+                    "release tag {tag:?}: numeric component does not fit in u64"
+                ))
+            })
+    };
+    let year = component(1)?;
+    let month = component(2)?;
+    let patch = component(3)?;
+
+    if !(1..=12).contains(&month) {
+        return Err(PacksError::ManifestValidation(format!(
+            "release tag {tag:?} has an invalid month (expected 01-12)"
+        )));
+    }
+
+    let version = format!("{year}.{month}.{patch}");
+    // The numeric core is leading-zero-free after parsing, so this always holds;
+    // assert it so a future change can never emit an invalid version silently.
+    if !is_valid_semver(&version) {
+        return Err(PacksError::ManifestValidation(format!(
+            "derived version {version:?} is not valid SemVer"
+        )));
+    }
+    Ok(version)
+}

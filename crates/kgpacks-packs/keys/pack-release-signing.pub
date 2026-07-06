@@ -1,0 +1,10 @@
+# Trusted Ed25519 public key for the pack release index (WS7, issue #22).
+#
+# `pack pull` verifies the `<name>.pack-release.json` signature against THIS key
+# by default. The matching private key is a CI/release secret and is NEVER
+# committed to the repository. Rotating the release key means replacing the
+# base64 line below and re-signing published indexes.
+#
+# Format: the first non-comment, non-blank line is the raw 32-byte Ed25519
+# public key, standard-base64 encoded.
+YyocySoDbgUHhQgfNFPawtLqKqRUIXXfBkFUO4x4KDw=

@@ -33,3 +33,8 @@ gadugi-test run -d scenarios -c agentic-test.config.yaml
 | `kgpacks-cli-smoke`            | `kgpacks version`                 | The binary runs and reports a version; exit 0.        |
 
 Runtime output (`outputs/`, `reports/`, `logs/`) is git-ignored.
+
+> The other scenarios in `scenarios/` (`*-parity`, `ws*`, `status-parity`, …) belong
+> to the cross-implementation **parity harness** (driven by the `qa/<name>/verify.sh`
+> oracles); see the main [README](../README.md). They require their own Node oracle
+> setup and are not part of the `fetch-cve-corpus` scenarios above.

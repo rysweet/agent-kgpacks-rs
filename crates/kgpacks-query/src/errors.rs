@@ -33,6 +33,14 @@ pub enum QueryError {
     #[error("{0}")]
     InvalidArgument(String),
 
+    /// An entity-graph seed that does not exist in the pack. A distinct variant
+    /// (rather than an [`QueryError::InvalidArgument`]) so the backend can map it
+    /// to a `404` without brittle message matching. Mirrors the TypeScript
+    /// `entityGraph`'s `new QueryError('entity not found: …')` — the reference
+    /// service string-matches `/not found/i`; the Rust surface makes it a type.
+    #[error("entity not found: {0}")]
+    EntityNotFound(String),
+
     /// A Cypher safety-validation failure. Wraps [`CypherValidationError`] so the
     /// standalone validator's error participates in the unified taxonomy.
     #[error(transparent)]

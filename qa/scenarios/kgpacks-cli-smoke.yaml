@@ -29,8 +29,8 @@ steps:
 verifications:
   - type: output
     target: stdout
-    expected: "0.1.0"
+    expected: "0.1."
     operator: contains
-    description: Reports the workspace version
+    description: Reports a 0.1.x workspace version
 estimatedDuration: 10
 enabled: true

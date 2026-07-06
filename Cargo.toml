@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/rysweet/agent-kgpacks-rs"
@@ -54,3 +54,11 @@ reqwest = { version = "0.13", default-features = false, features = [
   "blocking",
   "rustls",
 ] }
+
+# WS7 (issue #22): pure-Rust Ed25519 signing/verification of the release index.
+# No native/Python deps — `ed25519-dalek` is pure Rust; `getrandom` seeds the
+# keypair from the OS CSPRNG; `base64` encodes the raw 32-byte key / 64-byte
+# signature for the committed trusted key and the on-disk signature sidecar.
+ed25519-dalek = "2.1"
+getrandom = "0.2"
+base64 = "0.22"

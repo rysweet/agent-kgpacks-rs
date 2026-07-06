@@ -8,6 +8,7 @@
 //! Embeddings are generated *and stored* (`Section.embedding` / `Chunk.embedding`
 //! arrays); the HNSW vector index over those columns is hybrid-retrieval (M4).
 
+use std::collections::HashSet;
 use std::sync::OnceLock;
 
 use kgpacks_db::{Connection, LogicalType, Value};
@@ -15,9 +16,35 @@ use kgpacks_embeddings::{chunk_sections, Chunk, EmbeddingModel};
 use regex::Regex;
 
 use crate::content::{Article, ContentSource, ParsedSection};
+use crate::entity_relations::EntityRelationRow;
 use crate::extraction::{ExtractionResult, Extractor};
 use crate::orchestrator::ProcessOutcome;
 use crate::util::now_ms;
+
+/// Cypher that creates one `IN_CATEGORY` edge between an existing `Article` and
+/// `Category`, each located by its **primary key** in its own single `MATCH`
+/// (never the O(N²) comma two-pattern `MATCH (a {..}), (c {..})`).
+pub const CREATE_IN_CATEGORY_CYPHER: &str = "MATCH (a:Article {title: $title}) \
+     MATCH (c:Category {name: $category}) \
+     CREATE (a)-[:IN_CATEGORY]->(c)";
+
+/// Cypher that creates one `HAS_ENTITY` edge between an existing `Article` and
+/// `Entity`, each PK-located by its own single `MATCH`.
+pub const CREATE_HAS_ENTITY_CYPHER: &str = "MATCH (a:Article {title: $title}) \
+     MATCH (e:Entity {entity_id: $entity_id}) \
+     CREATE (a)-[:HAS_ENTITY]->(e)";
+
+/// Cypher that creates one `HAS_FACT` edge between an existing `Article` and
+/// `Fact`, each PK-located by its own single `MATCH`.
+pub const CREATE_HAS_FACT_CYPHER: &str = "MATCH (a:Article {title: $title}) \
+     MATCH (f:Fact {fact_id: $fact_id}) \
+     CREATE (a)-[:HAS_FACT]->(f)";
+
+/// Cypher that creates one `ENTITY_RELATION` edge between two existing
+/// `Entity` nodes, each PK-located by its own single `MATCH`.
+pub const CREATE_ENTITY_RELATION_CYPHER: &str = "MATCH (e1:Entity {entity_id: $source_id}) \
+     MATCH (e2:Entity {entity_id: $target_id}) \
+     CREATE (e1)-[:ENTITY_RELATION {relation: $relation, context: $context}]->(e2)";
 
 /// Processes a single article end to end into the working store.
 ///
@@ -296,8 +323,7 @@ impl<'a, 'db> ArticleProcessor<'a, 'db> {
                 vec![("category", Value::String(cat.clone()))],
             )?;
             self.conn.run_params(
-                "MATCH (a:Article {title: $title}), (c:Category {name: $category}) \
-                 CREATE (a)-[:IN_CATEGORY]->(c)",
+                CREATE_IN_CATEGORY_CYPHER,
                 vec![
                     ("title", Value::String(article.title.clone())),
                     ("category", Value::String(cat.clone())),
@@ -341,8 +367,7 @@ impl<'a, 'db> ArticleProcessor<'a, 'db> {
                 ],
             )?;
             self.conn.run_params(
-                "MATCH (a:Article {title: $title}), (e:Entity {entity_id: $entity_id}) \
-                 CREATE (a)-[:HAS_ENTITY]->(e)",
+                CREATE_HAS_ENTITY_CYPHER,
                 vec![
                     ("title", Value::String(article.title.clone())),
                     ("entity_id", Value::String(entity_id)),
@@ -360,8 +385,7 @@ impl<'a, 'db> ArticleProcessor<'a, 'db> {
                 ],
             )?;
             self.conn.run_params(
-                "MATCH (a:Article {title: $title}), (f:Fact {fact_id: $fact_id}) \
-                 CREATE (a)-[:HAS_FACT]->(f)",
+                CREATE_HAS_FACT_CYPHER,
                 vec![
                     ("title", Value::String(article.title.clone())),
                     ("fact_id", Value::String(fact_id)),
@@ -369,20 +393,36 @@ impl<'a, 'db> ArticleProcessor<'a, 'db> {
             )?;
         }
 
-        for rel in &extraction.relationships {
-            let source_id = format!("{}|{}", article.title, rel.source);
-            let target_id = format!("{}|{}", article.title, rel.target);
-            self.conn.run_params(
-                "MATCH (e1:Entity {entity_id: $source_id}), (e2:Entity {entity_id: $target_id}) \
-                 CREATE (e1)-[:ENTITY_RELATION {relation: $relation, context: $context}]->(e2)",
-                vec![
-                    ("source_id", Value::String(source_id)),
-                    ("target_id", Value::String(target_id)),
-                    ("relation", Value::String(rel.relation.clone())),
-                    ("context", Value::String(rel.context.clone())),
-                ],
-            )?;
-        }
+        // Bulk-load ENTITY_RELATION edges scalably instead of one round-trip per
+        // edge. Filter to rows whose BOTH endpoints were just created as Entity
+        // nodes (both source and target names appear in this article's extracted
+        // entities). This reproduces the old per-row `MATCH (e1), (e2) CREATE`
+        // loop's "silently drop a dangling endpoint" behavior — while replacing
+        // that comma two-pattern MATCH (an O(N²) self-hash-join over the growing
+        // Entity table) with the non-O(N²) bulk path, and keeping the `COPY`
+        // route (which errors on a dangling foreign key) safe. See
+        // [`crate::bulk_create_entity_relations`].
+        let created_entity_ids: HashSet<String> = extraction
+            .entities
+            .iter()
+            .map(|e| format!("{}|{}", article.title, e.name))
+            .collect();
+        let rel_rows: Vec<EntityRelationRow> = extraction
+            .relationships
+            .iter()
+            .filter_map(|rel| {
+                let source_id = format!("{}|{}", article.title, rel.source);
+                let target_id = format!("{}|{}", article.title, rel.target);
+                (created_entity_ids.contains(&source_id) && created_entity_ids.contains(&target_id))
+                    .then_some(EntityRelationRow {
+                        source_id,
+                        target_id,
+                        relation: rel.relation.clone(),
+                        context: rel.context.clone(),
+                    })
+            })
+            .collect();
+        crate::bulk_create_entity_relations(self.conn, &rel_rows)?;
         Ok(())
     }
 }
