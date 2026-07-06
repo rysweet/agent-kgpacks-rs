@@ -28,9 +28,16 @@ fn repo_root() -> PathBuf {
         .join("..")
 }
 
+/// The full-pack recall computation plus the corpus counts it was measured over.
+struct FullPackRecall {
+    total_questions: usize,
+    cve_questions: usize,
+    recall: BTreeMap<usize, f64>,
+}
+
 /// Compute recall@{1,3,5} over the full CVE question set, exactly as the
 /// committed artifact reports it.
-fn compute_recall() -> BTreeMap<usize, f64> {
+fn compute_recall() -> FullPackRecall {
     let packs_dir = repo_root().join("data").join("packs");
     let all = DirQuestionLoader::new(&packs_dir).load("cve").unwrap();
 
@@ -65,16 +72,20 @@ fn compute_recall() -> BTreeMap<usize, f64> {
         })
         .collect();
 
-    recall_at_k(&Embedder::bge(), &queries, &corpus, &KS)
+    FullPackRecall {
+        total_questions: all.len(),
+        cve_questions: queries.len(),
+        recall: recall_at_k(&Embedder::bge(), &queries, &corpus, &KS),
+    }
 }
 
 #[test]
 fn recall_is_well_formed_and_deterministic() {
-    let recall = compute_recall();
+    let computed = compute_recall();
     // A value per k, each a valid fraction, monotonic non-decreasing in k.
     let mut prev = -1.0;
     for &k in &KS {
-        let value = recall[&k];
+        let value = computed.recall[&k];
         assert!(
             (0.0..=1.0).contains(&value),
             "recall@{k} = {value} out of range"
@@ -83,12 +94,12 @@ fn recall_is_well_formed_and_deterministic() {
         prev = value;
     }
     // Deterministic across recomputation.
-    assert_eq!(recall, compute_recall());
+    assert_eq!(computed.recall, compute_recall().recall);
 }
 
 #[test]
 fn committed_artifact_matches_computed_recall() {
-    let recall = compute_recall();
+    let computed = compute_recall();
     let artifact = repo_root()
         .join("data")
         .join("packs")
@@ -98,10 +109,37 @@ fn committed_artifact_matches_computed_recall() {
         .unwrap_or_else(|e| panic!("read {}: {e}", artifact.display()));
     let json: Value = serde_json::from_str(&text).unwrap();
 
+    // The scalar claims must match the code, not just the recall values.
+    assert_eq!(json.get("pack").and_then(Value::as_str), Some("cve"));
+    assert_eq!(json.get("sampling").and_then(Value::as_str), Some("full"));
+    assert_eq!(
+        json.get("total_questions").and_then(Value::as_u64),
+        Some(computed.total_questions as u64),
+        "artifact total_questions must match the loaded corpus"
+    );
+    assert_eq!(
+        json.get("cve_questions").and_then(Value::as_u64),
+        Some(computed.cve_questions as u64),
+        "artifact cve_questions must match the CVE-specific count"
+    );
+
     let committed = json
         .get("retrieval_recall")
         .and_then(Value::as_object)
         .expect("artifact has a retrieval_recall object");
+
+    let committed_ks: Vec<u64> = committed
+        .get("k")
+        .and_then(Value::as_array)
+        .expect("retrieval_recall.k is an array")
+        .iter()
+        .filter_map(Value::as_u64)
+        .collect();
+    assert_eq!(
+        committed_ks,
+        KS.iter().map(|&k| k as u64).collect::<Vec<_>>(),
+        "artifact k must match the computed ks"
+    );
 
     for &k in &KS {
         let key = format!("recall_at_{k}");
@@ -109,10 +147,10 @@ fn committed_artifact_matches_computed_recall() {
             .get(&key)
             .and_then(Value::as_f64)
             .unwrap_or_else(|| panic!("artifact missing {key}"));
-        let computed = round3(recall[&k]);
+        let value = round3(computed.recall[&k]);
         assert!(
-            (committed_value - computed).abs() < 1e-9,
-            "artifact {key} = {committed_value} but code computes {computed}"
+            (committed_value - value).abs() < 1e-9,
+            "artifact {key} = {committed_value} but code computes {value}"
         );
     }
 }

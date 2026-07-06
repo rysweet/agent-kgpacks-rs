@@ -96,11 +96,16 @@ pub fn recall_at_k(
 }
 
 /// Embed a query, applying the BGE retrieval prefix for BGE-family embedders.
+///
+/// `generate_query` returns exactly one vector for a single non-empty query and
+/// only errors on an empty batch (which cannot happen here), so the trailing
+/// `embed` arm is unreachable defensive code — not a silent degradation path.
 fn embed_query(embedder: &Embedder, question: &str) -> Vec<f32> {
-    match embedder.generate_query(&[question]) {
-        Ok(mut vectors) if !vectors.is_empty() => vectors.remove(0),
-        _ => embedder.embed(question),
-    }
+    embedder
+        .generate_query(&[question])
+        .ok()
+        .and_then(|mut vectors| vectors.pop())
+        .unwrap_or_else(|| embedder.embed(question))
 }
 
 /// Cosine similarity of two vectors. The embedder yields unit-norm vectors, so

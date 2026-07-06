@@ -54,6 +54,19 @@ impl EvalQuestion {
             .and_then(Value::as_str)
     }
 
+    /// The **verifiable** recent CVE id this question targets: `metadata.cve` when
+    /// it is a well-formed `CVE-2024-…` / `CVE-2025-…` identifier (a 4-digit year
+    /// followed by a `>= 4`-digit sequence). Distinguishes a real, checkable CVE
+    /// from a question merely tagged with a recent `year`.
+    pub fn recent_cve_id(&self) -> Option<&str> {
+        let id = self.cve()?;
+        if is_recent_cve_id(id) {
+            Some(id)
+        } else {
+            None
+        }
+    }
+
     /// Whether this question references a real, recent (2024/2025) CVE.
     ///
     /// True when the question or reference answer mentions a `CVE-2024-…` /
@@ -84,6 +97,18 @@ impl EvalQuestion {
 /// True when `text` mentions a recent (2024/2025) CVE identifier.
 fn mentions_recent_cve(text: &str) -> bool {
     has_cve_with_prefix(text, "CVE-2024-") || has_cve_with_prefix(text, "CVE-2025-")
+}
+
+/// True when `id` is a well-formed recent CVE identifier: `CVE-2024-` / `CVE-2025-`
+/// followed by a sequence of `>= 4` digits (and nothing else).
+fn is_recent_cve_id(id: &str) -> bool {
+    let sequence = id
+        .strip_prefix("CVE-2024-")
+        .or_else(|| id.strip_prefix("CVE-2025-"));
+    match sequence {
+        Some(digits) => digits.len() >= 4 && digits.chars().all(|c| c.is_ascii_digit()),
+        None => false,
+    }
 }
 
 /// True when `text` contains `prefix` immediately followed by ≥3 digits (the
@@ -131,6 +156,18 @@ impl QuestionLoader for DirQuestionLoader {
             return Err(EvalError::QuestionLoad(format!(
                 "packId '{pack_id}' escapes the loader base directory"
             )));
+        }
+        // Also reject a `<root>/<pack_id>` that is a symlink resolving OUTSIDE the
+        // root: the lexical check above cannot see through symlinks. Only enforced
+        // when both paths exist (a missing pack falls through to the read error).
+        if let (Ok(canonical_root), Ok(canonical_pack)) =
+            (self.root.canonicalize(), pack_dir.canonicalize())
+        {
+            if canonical_pack != canonical_root && !canonical_pack.starts_with(&canonical_root) {
+                return Err(EvalError::QuestionLoad(format!(
+                    "packId '{pack_id}' escapes the loader base directory"
+                )));
+            }
         }
 
         let file = pack_dir.join(EVAL_QUESTIONS_FILENAME);

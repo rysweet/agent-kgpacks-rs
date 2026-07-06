@@ -48,6 +48,28 @@ fn rejects_pack_ids_that_escape_the_base_directory() {
 }
 
 #[test]
+#[cfg(unix)]
+fn rejects_a_pack_dir_symlinked_outside_the_base_directory() {
+    // `<base>/evil` is a valid pack name, but symlinks to a directory OUTSIDE the
+    // loader root — the lexical check cannot see through it, so canonicalization
+    // must reject it.
+    let base = tempdir().unwrap();
+    let outside = tempdir().unwrap();
+    std::fs::write(
+        outside.path().join("eval_questions.json"),
+        r#"[ { "id": "x", "question": "leak?" } ]"#,
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(outside.path(), base.path().join("evil")).unwrap();
+
+    let err = DirQuestionLoader::new(base.path())
+        .load("evil")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("escapes the loader base directory"), "{err}");
+}
+
+#[test]
 fn errors_when_the_pack_file_is_missing() {
     let base = tempdir().unwrap();
     let err = DirQuestionLoader::new(base.path())

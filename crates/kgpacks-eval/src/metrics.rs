@@ -10,7 +10,7 @@
 pub struct JudgeVerdict {
     /// The pass/fail decision; accuracy is the mean of this across an arm.
     pub correct: bool,
-    /// Graded quality in [0, 1]; supports finer aggregation.
+    /// Graded quality; aggregation clamps it into `[0, 1]` (`NaN` → `0`).
     pub score: f64,
     /// The judge's free-text rationale (untrusted model output — do not execute).
     pub reasoning: String,
@@ -54,8 +54,8 @@ fn accuracy_of(verdicts: &[JudgeVerdict]) -> f64 {
 }
 
 /// Compute one arm's `accuracy` (mean of `correct`) and `mean_score` (mean of
-/// `score`). An empty input yields `accuracy: 0, mean_score: 0, count: 0` (never
-/// `NaN`).
+/// `score`, each clamped into `[0, 1]` with `NaN` treated as `0`). An empty input
+/// yields `accuracy: 0, mean_score: 0, count: 0` (never `NaN`).
 pub fn aggregate_arm(name: impl Into<String>, results: &[JudgeVerdict]) -> ArmReport {
     let count = results.len();
     if count == 0 {
@@ -66,12 +66,23 @@ pub fn aggregate_arm(name: impl Into<String>, results: &[JudgeVerdict]) -> ArmRe
             count: 0,
         };
     }
-    let score_sum: f64 = results.iter().map(|v| v.score).sum();
+    let score_sum: f64 = results.iter().map(|v| clamp_unit(v.score)).sum();
     ArmReport {
         name: name.into(),
         accuracy: accuracy_of(results),
         mean_score: score_sum / count as f64,
         count,
+    }
+}
+
+/// Clamp a judge score into `[0, 1]`, mapping `NaN` to `0` so aggregates are
+/// always well-formed even if a judge returns an out-of-range or `NaN` score
+/// (the `JudgeVerdict.score` contract is a clamped `[0, 1]` quality).
+fn clamp_unit(score: f64) -> f64 {
+    if score.is_nan() {
+        0.0
+    } else {
+        score.clamp(0.0, 1.0)
     }
 }
 
@@ -170,5 +181,20 @@ mod tests {
         assert_eq!(cmp.losses, 0);
         assert_eq!(cmp.ties, 2);
         assert_eq!(cmp.win_rate, 0.0);
+    }
+
+    #[test]
+    fn mean_score_clamps_out_of_range_and_nan_scores() {
+        let report = aggregate_arm(
+            "with-pack",
+            &[
+                verdict(true, f64::NAN),
+                verdict(true, 2.5),
+                verdict(false, -1.0),
+            ],
+        );
+        // NaN -> 0, 2.5 -> 1, -1 -> 0 => mean 1/3; never NaN or out of [0, 1].
+        assert!((report.mean_score - 1.0 / 3.0).abs() < 1e-9);
+        assert!((0.0..=1.0).contains(&report.mean_score));
     }
 }

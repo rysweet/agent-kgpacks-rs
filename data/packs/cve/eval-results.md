@@ -21,11 +21,10 @@ the reported number is the **deterministic, LLM-free retrieval-recall** metric.
 ## Deterministic retrieval-recall (embedding hit@k)
 
 For each CVE-specific question, the question is embedded with the BGE query encoder
-(the deterministic-hash parity embedder) and matched (cosine) against a corpus of the
-pack's CVE records — here, one record per CVE question keyed by its committed
-reference answer. recall@k is the fraction of questions whose target record appears
-in the top-k. Measured over the **full** question set (no sampling), across the 12
-CVE-specific questions:
+(the deterministic-hash parity embedder) and matched (cosine) against a corpus of
+one record per CVE question, keyed by its committed reference answer. recall@k is
+the fraction of questions whose target record appears in the top-k. Measured over
+the **full** question set (no sampling), across the 12 CVE-specific questions:
 
 | Metric    | Value |
 | --------- | ----- |
@@ -33,10 +32,14 @@ CVE-specific questions:
 | recall@3  | 0.917 |
 | recall@5  | 0.917 |
 
-This confirms the expanded questions map to retrievable pack content (the retrieval
-half of the with-pack arm). It is a lower-bound sanity check on a small,
-deliberately homogeneous corpus (every record is a CVE, so distractors are close);
-the full 343k-record CVE pack has more diverse content.
+This is a deterministic, self-contained **reference-answer embedding** sanity
+check: it confirms each CVE question is discriminable against the other CVE records
+by embedding similarity, a lower-bound proxy for the retrieval half of the
+with-pack arm. It deliberately does not stand in for real pack ingestion +
+`kgpacks-query` retrieval or the LLM-judged with-pack-vs-training comparison — those
+are the blocked path above. It is measured on a small, deliberately homogeneous
+corpus (every record is a CVE, so distractors are close); the full 343k-record CVE
+pack has more diverse content.
 
 The numbers are produced — and CI-guarded against drift — by
 `cargo test -p kgpacks-eval --test full_pack_eval`, which recomputes recall from the

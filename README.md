@@ -397,7 +397,10 @@ follow-ups beyond this core flow.
   suite runs offline against mocks.
 - **Deterministic retrieval-recall fallback.** When no pinned judge/synthesis
   transport is available (the offline/CI case), `recall_at_k` provides an
-  LLM-free hit@k sanity check on the retrieval half of the with-pack arm.
+  LLM-free hit@k sanity check: it confirms each CVE question is discriminable
+  against the other CVE records by embedding similarity (a lower-bound proxy for
+  the retrieval half of the with-pack arm), rather than standing in for real pack
+  ingestion/retrieval or the LLM-judged comparison.
 
 The committed CVE eval set lives at
 [`data/packs/cve/eval_questions.json`](data/packs/cve/eval_questions.json) (14

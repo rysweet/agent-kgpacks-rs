@@ -80,3 +80,32 @@ fn is_extended_with_recent_cves_carrying_reference_answers() {
         );
     }
 }
+
+#[test]
+fn has_at_least_six_verifiable_cve_ids_with_reference_answers() {
+    // Stronger than the year-tag check: require >= 6 questions that carry a
+    // well-formed, verifiable CVE-2024/2025 identifier AND a non-empty reference
+    // answer (the "real, verifiable 2024/2025 CVEs" acceptance in #16).
+    let questions = load_cve_questions();
+    let verifiable: Vec<&EvalQuestion> = questions
+        .iter()
+        .filter(|q| {
+            q.recent_cve_id().is_some()
+                && q.reference_answer.as_deref().is_some_and(|r| !r.is_empty())
+        })
+        .collect();
+    assert!(
+        verifiable.len() >= 6,
+        "expected >= 6 verifiable recent-CVE questions with reference answers, got {}",
+        verifiable.len()
+    );
+    // Each verifiable CVE id is distinct (no duplicate CVEs padding the count).
+    let mut cves: Vec<&str> = verifiable
+        .iter()
+        .filter_map(|q| q.recent_cve_id())
+        .collect();
+    cves.sort_unstable();
+    let distinct = cves.len();
+    cves.dedup();
+    assert_eq!(distinct, cves.len(), "verifiable CVE ids must be distinct");
+}
