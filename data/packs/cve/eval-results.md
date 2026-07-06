@@ -47,6 +47,17 @@ committed questions and asserts it equals the values in
 [`eval-results.json`](./eval-results.json). It is fully deterministic (the embedder
 yields stable unit-norm vectors), so the artifact is reproducible.
 
+### Benchmark-only status (no live self-metric)
+
+These recall@k are **fixed benchmark numbers** over the committed 12-CVE corpus, not
+a live production self-metric trended over time. That is by necessity: the trended
+metric is the LLM-judged with-pack-vs-training `accuracy` / `mean_score` /
+`delta_accuracy`, which requires a pinned judge + synthesis transport that is
+unavailable in this offline/CI environment (see the status section above). When a
+transport is available, `run_eval` produces those live numbers (see "Reproducing the
+full LLM-judged eval" below); until then this deterministic benchmark is the
+CI-guarded stand-in.
+
 ## Reproducing the full LLM-judged eval
 
 Where a pinned judge + synthesis transport is available, wire the real `with-pack`
