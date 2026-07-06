@@ -408,8 +408,14 @@ fn cmd_pack_pull(packs_dir: &Path, args: &[String]) -> Result<String, String> {
     let trusted_key = resolve_trusted_key(&parsed.trusted_key)?;
 
     let index_path = packs_dir.join(pack_release_index_filename(&parsed.pack));
+    if !index_path.exists() {
+        return Err(format!(
+            "release index not found at {}",
+            index_path.display()
+        ));
+    }
     let index_bytes = std::fs::read(&index_path)
-        .map_err(|_| format!("release index not found at {}", index_path.display()))?;
+        .map_err(|e| format!("cannot read release index at {}: {e}", index_path.display()))?;
 
     let sig_path = packs_dir.join(pack_release_signature_filename(&parsed.pack));
     let present = sig_path.exists();
@@ -417,7 +423,9 @@ fn cmd_pack_pull(packs_dir: &Path, args: &[String]) -> Result<String, String> {
     // Compute validity by verifying the RAW bytes before any parse. A malformed
     // or wrong-length sidecar counts as an invalid (not absent) signature so the
     // policy fails closed rather than silently downgrading to integrity-only.
-    let valid = if present {
+    // Under `--no-verify` we never touch the sidecar — skipping means skipping,
+    // so an unreadable sidecar must not turn a `--no-verify` pull into an error.
+    let valid = if present && !parsed.no_verify {
         let sig_raw = std::fs::read_to_string(&sig_path)
             .map_err(|e| format!("cannot read signature sidecar: {e}"))?;
         match PackIndexSignature::from_json_str(&sig_raw)

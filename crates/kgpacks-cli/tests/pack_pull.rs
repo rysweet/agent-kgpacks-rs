@@ -160,6 +160,31 @@ fn pull_skips_verification_with_no_verify() {
 }
 
 #[test]
+fn pull_no_verify_ignores_a_present_signature() {
+    let dir = tempdir().unwrap();
+    let signer = SigningKeyPair::generate().unwrap();
+    let sidecar = signer
+        .sign_index(INDEX_JSON.as_bytes())
+        .to_json_string()
+        .unwrap();
+    write_index(dir.path(), "acme", Some(&sidecar));
+
+    // Even with a present (valid) sidecar, --no-verify must skip verification and
+    // report the signature as unverified rather than verifying it.
+    let out = run(&args(&[
+        "--packs-dir",
+        dir.path().to_str().unwrap(),
+        "pack",
+        "pull",
+        "acme",
+        "--no-verify",
+    ]))
+    .expect("--no-verify skips even a present signature");
+    assert!(out.contains("\"policy\": \"skip\""), "output: {out}");
+    assert!(out.contains("\"verified\": false"), "output: {out}");
+}
+
+#[test]
 fn pull_rejects_mutually_exclusive_flags() {
     let dir = tempdir().unwrap();
     write_index(dir.path(), "acme", None);
