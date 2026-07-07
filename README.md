@@ -63,6 +63,12 @@ under [`crates/`](crates/) and share versioning through the root
 The reference's `apps/frontend` (React SPA) and `parity/` (golden-fixture diff
 harness against the Python/TS oracle) are tracked for a later milestone.
 
+Design notes and exploratory spikes live under [`docs/`](docs/) — currently the
+int8 embedding-quantization spike
+([`docs/spikes/ws2-int8-quantization.md`](docs/spikes/ws2-int8-quantization.md),
+WS2 #17), a tested codec that is implemented but left disabled pending the WS1
+#16 eval recall-parity baseline.
+
 ### Upstream dependencies
 
 The workspace declares the Simard Rust stack as `[workspace.dependencies]` so member

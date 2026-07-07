@@ -15,12 +15,21 @@
 //!   than texts that don't" — via a hashed bag-of-words projection. A real
 //!   transformer backend (e.g. `candle`/`ort`) can implement [`EmbeddingModel`]
 //!   later without touching the pipeline.
+//! * [`quant`] — int8 (scalar) quantization codec for fp32 embeddings (WS2
+//!   spike, issue #17). Shrinks stored vectors ~3.97× at 768-d; **disabled**
+//!   pending the WS1 #16 eval recall-parity baseline (see
+//!   [`quant::quantization_enabled`]).
 
 pub mod chunker;
+pub mod quant;
 
 pub use chunker::{
     chunk_sections, chunk_sections_with, chunk_text, chunk_text_with, Chunk, DEFAULT_CHUNK_SIZE,
     DEFAULT_OVERLAP,
+};
+pub use quant::{
+    compression_ratio, dequantize_int8, dequantize_int8_dim, fp32_bytes, int8_bytes,
+    quantization_enabled, quantize_int8, QuantizeError, QuantizedEmbedding, INT8_CODE_MAX,
 };
 
 use std::fmt;
