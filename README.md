@@ -178,6 +178,11 @@ cargo run --bin kgpacks --features copilot -- ask rust-expert "what is ownership
 # `net` feature for the real GitHub download; see docs/cve-corpus.md):
 cargo run --bin kgpacks --features net -- fetch-cve-corpus --kind delta
 
+# Sign a release index with the Ed25519 release key (WS7). The private seed is a
+# CI secret loaded out-of-band (never committed); it writes the .sig sidecar:
+KGPACKS_RELEASE_SIGNING_KEY="$RELEASE_SEED_B64" \
+  cargo run --bin kgpacks -- pack sign rust-expert
+
 # Verify a signed release index, then pull it (WS7). Fails closed on a
 # tampered/untrusted signature; `--require-signature` rejects an unsigned index;
 # `--no-verify` skips the check:
@@ -538,9 +543,13 @@ over the same `kgpacks-packs` registry/manifest APIs. The offline release
 planner is also ported — `pack release-plan <pack> [--tag <t>] [--model <id>]
 [--corpus-commit <sha>] [--corpus-date <date>]` prints the network-free plan
 (`{ name, tag, version, model, provenance, publishTargets, indexFilename }`) for
-publishing a pack. The write/network `pack` subcommands (`install`/`pull`/`remove`),
-the byte-level release packaging + `gh` upload behind `release-plan`, and the
-ingestion/eval verbs (`create`/`update`/`eval`) remain follow-ups (issue #13).
+publishing a pack. The WS7 ([#22](https://github.com/rysweet/agent-kgpacks-rs/issues/22))
+release-index **signing pair** is ported too — `pack sign <pack>` produces the
+Ed25519 `.sig` sidecar and `pack pull <pack>` verifies it (see
+[Release-index signing](#release-index-signing-ws7)). The remaining write/network
+`pack` subcommands (`install`/`remove`), the byte-level release packaging + `gh`
+upload behind `release-plan`, and the ingestion/eval verbs (`create`/`update`/`eval`)
+remain follow-ups (issue #13).
 
 ### Versioned release tags + provenance (WS3)
 
@@ -658,7 +667,8 @@ release-index schema whether or not it has landed:
 - `SigningKeyPair` — pure-Rust Ed25519 (`ed25519-dalek`) keypair generation
   (OS-CSPRNG seeded), detached signing over the raw index bytes, and the
   `<name>.pack-release.json.sig` sidecar (`{algorithm, signature, public_key}`,
-  base64).
+  base64). It loads a release signing key from a base64 raw 32-byte seed
+  (`from_seed_base64`), the CI-secret half that the `pack sign` command consumes.
 - `verify_pack_index_signature(index_bytes, sig, trusted_pubkey) -> bool` —
   **verify-before-parse** over the raw bytes; rejects tampered bytes, wrong-length
   inputs, and signatures from untrusted keys (uses `verify_strict`, never panics).
@@ -675,16 +685,35 @@ The **trusted** public key is committed at
 with `--trusted-key <base64>` or `KGPACKS_TRUSTED_RELEASE_KEY`. Trust is anchored
 on that committed key — **not** on the `public_key` a sidecar happens to carry.
 
+The two release surfaces are the producing `pack sign` and the consuming
+`pack pull`:
+
 ```bash
-# Verify against the committed trusted key (default), requiring a signature:
+# PRODUCE (release/CI): sign the release index with the Ed25519 release PRIVATE
+# key. The seed is a base64 raw 32-byte secret supplied out-of-band — via
+# --key-file <path> or KGPACKS_RELEASE_SIGNING_KEY — and is NEVER committed.
+# Writes <rust-expert>.pack-release.json.sig next to the index (override with
+# --out), and reports whether the signer matches the committed trusted key:
+KGPACKS_RELEASE_SIGNING_KEY="$RELEASE_SEED_B64" \
+  kgpacks --packs-dir ./packs pack sign rust-expert
+
+# CONSUME (client): verify against the committed trusted key (default),
+# requiring a signature:
 kgpacks --packs-dir ./packs pack pull rust-expert --require-signature
 # Skip verification (integrity-only):
 kgpacks --packs-dir ./packs pack pull rust-expert --no-verify
 ```
 
+There is deliberately **no default** signing key: `pack sign` refuses to run
+without an explicit `--key-file`/env seed, so a release is never signed with an
+implicit or committed key (fail-closed). The seed is decoded and length-checked
+before use, and neither the CLI nor the library ever echoes the secret bytes.
+
 | Behavior (issue #22)                                   | Rust surface                                          | Test                                                    |
 | ------------------------------------------------------ | ----------------------------------------------------- | ------------------------------------------------------- |
 | Keypair gen + detached sign over raw index bytes       | `signing::SigningKeyPair`                             | `packs/tests/signing.rs`, `signing` unit tests          |
+| Load release signing key from a base64 seed            | `signing::SigningKeyPair::from_seed_base64`           | `signing` unit tests                                    |
+| `pack sign` produce path (+ sign→pull round-trip)      | `kgpacks-cli` (`pack sign`)                           | `cli/tests/pack_sign.rs`, `qa/pull-signature`           |
 | `verify_pack_index_signature` (tamper / wrong-key)     | `signing::verify_pack_index_signature`               | `packs/tests/signing.rs`, `signing` unit tests          |
 | Pull-time policy + mutually-exclusive flags            | `signing::{signature_plan, validate_signature_flags}` | `signing` unit tests, `cli/tests/pack_pull.rs`          |
 | `pack pull` verify path (fail-closed)                  | `kgpacks-cli` (`pack pull`)                           | `cli/tests/pack_pull.rs`                                |

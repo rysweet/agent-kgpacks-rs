@@ -1,17 +1,21 @@
 name: pack-pull-signature
 description: >-
   Outside-in cross-implementation check for the WS7 release-index signature path
-  (kgpacks-cli `pack pull`, over kgpacks-packs::signing —
-  verify_pack_index_signature / signature_plan / validate_signature_flags /
-  SigningKeyPair). Drives the committed harness (qa/pull-signature/verify.sh),
-  which signs a pack release index with Node's BUILT-IN Ed25519 (an
-  implementation independent of the Rust ed25519-dalek), then verifies + pulls it
-  through the real `kgpacks pack pull` command and asserts every branch of the
-  fail-closed policy: a valid Node signature verifies (interop); an untrusted key
-  and a tampered index are rejected (fail-closed); an unsigned index warns unless
-  --require-signature (then fails); --no-verify skips; --require-signature with
-  --no-verify is a usage error; and the committed DEFAULT trusted key rejects a
-  foreign signature. Closes the WS7 half of agent-kgpacks-rs #22.
+  (kgpacks-cli `pack sign` + `pack pull`, over kgpacks-packs::signing —
+  SigningKeyPair / verify_pack_index_signature / signature_plan /
+  validate_signature_flags). Drives the committed harness
+  (qa/pull-signature/verify.sh), which signs a pack release index with Node's
+  BUILT-IN Ed25519 (an implementation independent of the Rust ed25519-dalek),
+  then verifies + pulls it through the real `kgpacks pack pull` command and
+  asserts every branch of the fail-closed policy: a valid Node signature verifies
+  (interop); an untrusted key and a tampered index are rejected (fail-closed); an
+  unsigned index warns unless --require-signature (then fails); --no-verify skips;
+  --require-signature with --no-verify is a usage error; and the committed DEFAULT
+  trusted key rejects a foreign signature. It ALSO exercises the producing half:
+  the Rust `pack sign` command signs an index (loading a Node-generated seed) and
+  the resulting sidecar is accepted by `pack pull --require-signature`
+  (sign→pull round-trip), and `pack sign` with no key source is a usage error.
+  Closes the WS7 half of agent-kgpacks-rs #22.
 version: "1.0"
 config:
   timeout: 900000
@@ -26,7 +30,7 @@ agents:
     config:
       workingDirectory: "."
 metadata:
-  tags: [cli, signing, ed25519, security, release, pack-pull, interop]
+  tags: [cli, signing, ed25519, security, release, pack-sign, pack-pull, interop]
   priority: high
 steps:
   - name: run cross-implementation signature verification check

@@ -29,8 +29,8 @@ use kgpacks_packs::{
     build_cve_pack, decode_public_key, pack_release_filename, pack_release_signature_filename,
     plan_release, signature_plan, trusted_release_public_key, validate_signature_flags,
     verify_pack_index_signature, BuildParams, FixtureCorpus, PackIndexSignature, PackManifest,
-    PipelineOptions, ProvenanceOverrides, SignatureInputs, SignaturePlan, DEFAULT_BATCH_SIZE,
-    DEFAULT_QUEUE_CAPACITY, LATEST_POINTER_TAG,
+    PipelineOptions, ProvenanceOverrides, SignatureInputs, SignaturePlan, SigningKeyPair,
+    DEFAULT_BATCH_SIZE, DEFAULT_QUEUE_CAPACITY, LATEST_POINTER_TAG, SIGNATURE_ALGORITHM,
 };
 use kgpacks_query::{
     retrieve_and_synthesize, PackRetriever, RetrieveMode, RetrieveOptions, Retriever,
@@ -48,6 +48,12 @@ const CLI_DEFAULT_K: usize = 5;
 /// 32-byte Ed25519). Falls back to the committed
 /// `kgpacks-packs/keys/pack-release-signing.pub` when unset.
 const TRUSTED_KEY_ENV: &str = "KGPACKS_TRUSTED_RELEASE_KEY";
+
+/// Environment variable holding the release **signing** key: a base64 raw
+/// 32-byte Ed25519 secret seed. A CI/release secret — never committed, and never
+/// read by any verify path. `pack sign`'s `--key-file` flag takes precedence
+/// over this variable when both are provided.
+const RELEASE_SIGNING_KEY_ENV: &str = "KGPACKS_RELEASE_SIGNING_KEY";
 
 /// A factory for the graph-RAG agent's transport (the `ask` execution seam).
 pub type TransportFactory<'a> = &'a dyn Fn() -> Box<dyn Transport>;
@@ -114,6 +120,7 @@ fn help_text() -> String {
         "  pack info <pack>                                          a pack's full manifest as JSON",
         "  pack validate <pack>                                      validate a pack's manifest as JSON",
         "  pack release-plan <pack> [--tag <t>]                      offline pack-release plan (version, provenance, tags) as JSON",
+        "  pack sign <pack> [--key-file <path>] [--out <path>] [--trusted-key <b64>]   sign the release index (Ed25519) → .sig sidecar",
         "  pack pull <pack> [--require-signature] [--no-verify] [--trusted-key <b64>]   verify + pull a signed release index",
         "  demo                                                      smoke-test the pipeline",
         "  version                                                   print the version",
@@ -543,24 +550,26 @@ fn cmd_status(packs_dir: &Path) -> Result<String, String> {
 /// Ports the READ-PATH subset of `cli/src/commands/pack.ts` plus the offline
 /// projection of the release tooling (`scripts/release-pack.mjs`): the
 /// deterministic, network-free subcommands `list`, `info`, `validate`, and
-/// `release-plan`, plus WS7 (#22) `pull`, which verifies the release-index
-/// Ed25519 signature (fail-closed) before trusting it. The byte-level packaging
-/// and `gh` upload behind `release-plan`, the remaining write/network
-/// subcommands (`install`, `remove`) and the ingestion/eval verbs (`create`,
-/// `update`, `eval`) remain follow-ups (issue #13), consistent with the Rust
-/// port being the read-path subset of the TypeScript CLI.
+/// `release-plan`, plus the WS7 (#22) release-index signing pair — `sign`, which
+/// produces the Ed25519 `.sig` sidecar with the release private key, and `pull`,
+/// which verifies that signature (fail-closed) before trusting the index. The
+/// byte-level packaging and `gh` upload behind `release-plan`, the remaining
+/// write/network subcommands (`install`, `remove`) and the ingestion/eval verbs
+/// (`create`, `update`, `eval`) remain follow-ups (issue #13), consistent with
+/// the Rust port being the read-path subset of the TypeScript CLI.
 fn cmd_pack(packs_dir: &Path, args: &[String]) -> Result<String, String> {
     match args.first().map(String::as_str) {
         Some("list") => cmd_pack_list(packs_dir),
         Some("info") => cmd_pack_info(packs_dir, args.get(1)),
         Some("validate") => cmd_pack_validate(packs_dir, args.get(1)),
         Some("release-plan") => cmd_pack_release_plan(packs_dir, &args[1..]),
+        Some("sign") => cmd_pack_sign(packs_dir, &args[1..]),
         Some("pull") => cmd_pack_pull(packs_dir, &args[1..]),
         Some(other) => Err(format!(
-            "unknown pack subcommand: {other} (expected: list, info, validate, release-plan, pull)"
+            "unknown pack subcommand: {other} (expected: list, info, validate, release-plan, sign, pull)"
         )),
         None => Err(
-            "missing pack subcommand (expected: list, info, validate, release-plan, pull)"
+            "missing pack subcommand (expected: list, info, validate, release-plan, sign, pull)"
                 .to_string(),
         ),
     }
@@ -700,6 +709,158 @@ fn flag_value(args: &[String], i: &mut usize, flag: &str) -> Result<String, Stri
     args.get(*i)
         .cloned()
         .ok_or_else(|| format!("{flag} requires a value"))
+}
+
+/// Flags parsed for `pack sign`.
+struct SignArgs {
+    pack: String,
+    key_file: Option<String>,
+    out: Option<String>,
+    trusted_key: Option<String>,
+}
+
+fn parse_sign_args(args: &[String]) -> Result<SignArgs, String> {
+    let mut positionals: Vec<String> = Vec::new();
+    let mut key_file: Option<String> = None;
+    let mut out: Option<String> = None;
+    let mut trusted_key: Option<String> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--key-file" => {
+                let raw = args
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --key-file".to_string())?;
+                key_file = Some(raw.clone());
+                i += 2;
+            }
+            "--out" => {
+                let raw = args
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --out".to_string())?;
+                out = Some(raw.clone());
+                i += 2;
+            }
+            "--trusted-key" => {
+                let raw = args
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --trusted-key".to_string())?;
+                trusted_key = Some(raw.clone());
+                i += 2;
+            }
+            // `pack sign` WRITES a file, so a mistyped flag must be a hard error
+            // rather than a silently-dropped token — the operator has to know the
+            // signature was produced with exactly the arguments they intended.
+            other if other.starts_with("--") => return Err(format!("unknown flag: {other}")),
+            other => {
+                positionals.push(other.to_string());
+                i += 1;
+            }
+        }
+    }
+
+    if positionals.len() > 1 {
+        return Err(format!("unexpected extra argument: {}", positionals[1]));
+    }
+    let pack = positionals
+        .into_iter()
+        .next()
+        .ok_or_else(|| "missing <pack> argument".to_string())?;
+    Ok(SignArgs {
+        pack,
+        key_file,
+        out,
+        trusted_key,
+    })
+}
+
+/// Resolve the release **signing** seed (base64 raw 32-byte Ed25519 secret seed):
+/// `--key-file <path>` wins, then the `KGPACKS_RELEASE_SIGNING_KEY` env var.
+///
+/// There is deliberately **no default** — unlike the *trusted public* key, a
+/// signing key is a secret that must be supplied explicitly, so a release is
+/// never signed with an implicit or committed key. The returned string is
+/// decoded (and its length validated) by [`SigningKeyPair::from_seed_base64`];
+/// neither this function nor that decoder ever echoes the seed bytes.
+fn resolve_signing_seed(key_file: &Option<String>) -> Result<String, String> {
+    if let Some(path) = key_file {
+        return std::fs::read_to_string(path)
+            .map_err(|e| format!("cannot read signing key file {path}: {e}"));
+    }
+    std::env::var(RELEASE_SIGNING_KEY_ENV).map_err(|_| {
+        format!(
+            "no signing key: pass --key-file <path> or set {RELEASE_SIGNING_KEY_ENV} \
+             (base64 raw 32-byte Ed25519 secret seed)"
+        )
+    })
+}
+
+/// `pack sign <pack>` — the release-side counterpart to `pack pull` (WS7, #22).
+///
+/// Signs the RAW bytes of the `<pack>.pack-release.json` release index with the
+/// Ed25519 release private key (a CI secret loaded out-of-band via `--key-file`
+/// or `KGPACKS_RELEASE_SIGNING_KEY`, never committed) and writes the detached
+/// `<pack>.pack-release.json.sig` sidecar that `pack pull` verifies. Signing over
+/// the raw bytes keeps it format-agnostic, exactly like the verify path. It also
+/// reports whether the signer's public key matches the key `pack pull` trusts by
+/// default, so an operator who signs with the wrong key sees it immediately
+/// (that pull would otherwise fail-closed).
+fn cmd_pack_sign(packs_dir: &Path, args: &[String]) -> Result<String, String> {
+    let parsed = parse_sign_args(args)?;
+    validate_pack_name(&parsed.pack)?;
+
+    // Resolve EVERY fallible input up front so a bad argument fails before any
+    // side effect: `pack sign` writes a file, so it must not leave a sidecar on
+    // disk while also exiting non-zero because e.g. `--trusted-key` was malformed.
+    let trusted_key = resolve_trusted_key(&parsed.trusted_key)?;
+
+    let index_path = packs_dir.join(pack_release_filename(&parsed.pack));
+    if !index_path.exists() {
+        return Err(format!(
+            "release index not found at {}",
+            index_path.display()
+        ));
+    }
+    let index_bytes = std::fs::read(&index_path)
+        .map_err(|e| format!("cannot read release index at {}: {e}", index_path.display()))?;
+
+    let seed_b64 = resolve_signing_seed(&parsed.key_file)?;
+    let signer = SigningKeyPair::from_seed_base64(&seed_b64).map_err(|e| e.to_string())?;
+
+    // Detached signature over the RAW index bytes (verify-before-parse's mirror).
+    let sidecar_json = signer
+        .sign_index(&index_bytes)
+        .to_json_string()
+        .map_err(|e| e.to_string())?;
+
+    let out_path = match &parsed.out {
+        Some(p) => PathBuf::from(p),
+        None => packs_dir.join(pack_release_signature_filename(&parsed.pack)),
+    };
+    std::fs::write(&out_path, &sidecar_json).map_err(|e| {
+        format!(
+            "cannot write signature sidecar to {}: {e}",
+            out_path.display()
+        )
+    })?;
+
+    // Anchor-check (pure, cannot fail — the trusted key was resolved above): does
+    // this signer's public key match the key `pack pull` trusts by default? If
+    // not, a default pull would reject this signature.
+    let matches_trusted_key = signer.public_key_bytes() == trusted_key;
+
+    let json = serde_json::json!({
+        "command": "sign",
+        "pack": parsed.pack,
+        "index": pack_release_filename(&parsed.pack),
+        "signature_file": out_path.display().to_string(),
+        "algorithm": SIGNATURE_ALGORITHM,
+        "public_key": signer.public_key_base64(),
+        "matches_trusted_key": matches_trusted_key,
+        "status": "ok",
+    });
+    serde_json::to_string_pretty(&json).map_err(|e| e.to_string())
 }
 
 /// Compare two pack names the way the reference CLI's `name.localeCompare(...)`
@@ -1151,6 +1312,7 @@ mod tests {
         assert!(out.contains("pack info"));
         assert!(out.contains("pack validate"));
         assert!(out.contains("pack release-plan"));
+        assert!(out.contains("pack sign"));
         assert!(out.contains("pack pull"));
     }
 

@@ -51,10 +51,10 @@ pub use manifest::{
 };
 
 pub use signing::{
-    decode_public_key, pack_release_signature_filename, parse_trusted_public_key, signature_plan,
-    trusted_release_public_key, validate_signature_flags, verify_pack_index_signature,
-    PackIndexSignature, SignatureInputs, SignaturePlan, SigningKeyPair, PUBLIC_KEY_LEN,
-    SECRET_SEED_LEN, SIGNATURE_ALGORITHM, SIGNATURE_LEN,
+    decode_public_key, decode_secret_seed, pack_release_signature_filename,
+    parse_trusted_public_key, signature_plan, trusted_release_public_key, validate_signature_flags,
+    verify_pack_index_signature, PackIndexSignature, SignatureInputs, SignaturePlan,
+    SigningKeyPair, PUBLIC_KEY_LEN, SECRET_SEED_LEN, SIGNATURE_ALGORITHM, SIGNATURE_LEN,
 };
 
 pub use versioning::{

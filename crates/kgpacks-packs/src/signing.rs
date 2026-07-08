@@ -79,6 +79,17 @@ impl SigningKeyPair {
         }
     }
 
+    /// Construct from a base64 raw 32-byte secret seed.
+    ///
+    /// The **release/signing** counterpart to [`decode_public_key`]: the private
+    /// seed is a CI/release secret supplied out-of-band (an env var or a key
+    /// file), never committed. Surrounding whitespace is trimmed by
+    /// [`decode_secret_seed`], so a seed read from a file with a trailing newline
+    /// still loads. Fails — never panics — on non-base64 or wrong-length input.
+    pub fn from_seed_base64(base64_seed: &str) -> Result<Self> {
+        Ok(Self::from_seed(&decode_secret_seed(base64_seed)?))
+    }
+
     /// The raw 32-byte public key.
     pub fn public_key_bytes(&self) -> [u8; PUBLIC_KEY_LEN] {
         self.signing_key.verifying_key().to_bytes()
@@ -92,6 +103,13 @@ impl SigningKeyPair {
     /// The raw 32-byte secret seed. Handle as a secret; never persist it.
     pub fn secret_seed_bytes(&self) -> [u8; SECRET_SEED_LEN] {
         self.signing_key.to_bytes()
+    }
+
+    /// The secret seed as standard base64 — the `--key-file` / env format a
+    /// release signer supplies to `pack sign`. This is the private half: handle
+    /// it as a secret and never persist it to the repository.
+    pub fn secret_seed_base64(&self) -> String {
+        BASE64.encode(self.secret_seed_bytes())
     }
 
     /// Produce a detached signature over the RAW release-index bytes.
@@ -311,6 +329,25 @@ pub fn decode_public_key(base64_key: &str) -> Result<[u8; PUBLIC_KEY_LEN]> {
     <[u8; PUBLIC_KEY_LEN]>::try_from(bytes.as_slice()).map_err(|_| {
         PacksError::Signature(format!(
             "public key must be {PUBLIC_KEY_LEN} bytes, got {}",
+            bytes.len()
+        ))
+    })
+}
+
+/// Decode a base64 raw Ed25519 secret seed into its 32 bytes.
+///
+/// The **release/signing** counterpart to [`decode_public_key`]: this loads the
+/// private seed a release signer supplies out-of-band (a CI secret, never
+/// committed). Trims surrounding whitespace so a seed read from a file with a
+/// trailing newline still decodes. Returns an error — never panics — on
+/// non-base64 or wrong-length input, and never echoes the seed bytes.
+pub fn decode_secret_seed(base64_seed: &str) -> Result<[u8; SECRET_SEED_LEN]> {
+    let bytes = BASE64
+        .decode(base64_seed.trim())
+        .map_err(|err| PacksError::Signature(format!("secret seed is not valid base64: {err}")))?;
+    <[u8; SECRET_SEED_LEN]>::try_from(bytes.as_slice()).map_err(|_| {
+        PacksError::Signature(format!(
+            "secret seed must be {SECRET_SEED_LEN} bytes, got {}",
             bytes.len()
         ))
     })
@@ -547,5 +584,70 @@ mod tests {
         assert!(shown.contains("public_key_base64"));
         // The base64 of the all-0x2a seed must not appear.
         assert!(!shown.contains(&BASE64.encode([42u8; SECRET_SEED_LEN])));
+    }
+
+    #[test]
+    fn from_seed_base64_round_trips_a_signing_key() {
+        let seed = [13u8; SECRET_SEED_LEN];
+        let direct = SigningKeyPair::from_seed(&seed);
+        // A base64 seed (as a release signer would supply) loads the same key.
+        let loaded = SigningKeyPair::from_seed_base64(&BASE64.encode(seed)).unwrap();
+        assert_eq!(loaded.public_key_bytes(), direct.public_key_bytes());
+        // ...and a signature it produces verifies against that public key.
+        let sig = loaded.sign(INDEX);
+        assert!(verify_pack_index_signature(
+            INDEX,
+            &sig,
+            &direct.public_key_bytes()
+        ));
+    }
+
+    #[test]
+    fn secret_seed_base64_round_trips_through_from_seed_base64() {
+        let pair = fixed_pair();
+        let exported = pair.secret_seed_base64();
+        let reloaded = SigningKeyPair::from_seed_base64(&exported).unwrap();
+        assert_eq!(reloaded.public_key_bytes(), pair.public_key_bytes());
+        assert_eq!(reloaded.secret_seed_bytes(), pair.secret_seed_bytes());
+    }
+
+    #[test]
+    fn from_seed_base64_tolerates_surrounding_whitespace() {
+        let seed = [5u8; SECRET_SEED_LEN];
+        // A seed read from a file often carries a trailing newline.
+        let padded = format!("  {}\n", BASE64.encode(seed));
+        let loaded = SigningKeyPair::from_seed_base64(&padded).unwrap();
+        assert_eq!(
+            loaded.public_key_bytes(),
+            SigningKeyPair::from_seed(&seed).public_key_bytes()
+        );
+    }
+
+    #[test]
+    fn decode_secret_seed_rejects_bad_base64_and_lengths_without_leaking() {
+        // Not base64 at all.
+        assert!(decode_secret_seed("!!! not base64 !!!").is_err());
+        // Valid base64 but the wrong length (16 bytes, not 32).
+        let short = decode_secret_seed(&BASE64.encode([0u8; 16]));
+        let err = short.unwrap_err().to_string();
+        assert!(err.contains("32 bytes"), "err: {err}");
+        assert!(err.contains("got 16"), "err: {err}");
+        // The error text must never echo the (secret) seed bytes.
+        let secret = BASE64.encode([7u8; 16]);
+        let leaked = decode_secret_seed(&secret).unwrap_err().to_string();
+        assert!(
+            !leaked.contains(&secret),
+            "seed leaked into error: {leaked}"
+        );
+    }
+
+    #[test]
+    fn a_signature_from_a_loaded_seed_matches_the_committed_trusted_key_only_for_that_seed() {
+        // Signing with an arbitrary loaded seed produces a key that is NOT the
+        // committed trusted key, so `pack pull` (which trusts the committed key)
+        // would fail-closed — the invariant `pack sign` reports to the operator.
+        let foreign =
+            SigningKeyPair::from_seed_base64(&BASE64.encode([3u8; SECRET_SEED_LEN])).unwrap();
+        assert_ne!(foreign.public_key_bytes(), trusted_release_public_key());
     }
 }
