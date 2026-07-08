@@ -33,10 +33,25 @@ use crate::checkpoint::{checkpoint_path_for, BuildCheckpoint, BuildCounts};
 use crate::corpus::{CorpusSource, CveRecord};
 use crate::errors::{PacksError, Result};
 use crate::manifest::{manifest_path_in, save_manifest, validate_manifest, PackManifest};
-use crate::pack::GRAPH_STORE_FILENAME;
+use crate::pack::{CREATE_HAS_ENTITY_CYPHER, GRAPH_STORE_FILENAME};
 
 /// Category assigned to every CVE `Article` node.
 pub const CVE_CATEGORY: &str = "cve";
+
+/// Cypher that creates one `ENTITY_RELATION` edge between two existing `Entity`
+/// nodes, each PK-located by its **own** single `MATCH`.
+///
+/// Two PK-indexed point lookups (each returns exactly one node) replace the
+/// O(N²) comma two-pattern `MATCH (s {..}), (t {..})`, whose cartesian shape
+/// pushes edge creation toward quadratic work as the entity table grows — the
+/// scalability invariant WS5 (linear loader) and WS8 (scalable
+/// `ENTITY_RELATION`) require of the `--with-entity-relations` build path. A row
+/// whose endpoint is missing is silently skipped by `MATCH` (parity with the
+/// per-row loop it replaces), which is what lets the caller stream relations
+/// whose endpoints may span records without pre-filtering.
+pub const CREATE_ENTITY_RELATION_CYPHER: &str = "MATCH (s:Entity {entity_id: $source_id}) \
+     MATCH (t:Entity {entity_id: $target_id}) \
+     CREATE (s)-[:ENTITY_RELATION {relation: $relation, context: $context}]->(t)";
 
 /// Default batch size when [`BuildParams::batch`] is left at its default.
 pub const DEFAULT_BATCH_SIZE: usize = 64;
@@ -568,8 +583,7 @@ fn load_record(
         // De-duplicate HAS_ENTITY edges within a record.
         if edged.insert(entity.entity_id.as_str()) {
             conn.run_params(
-                "MATCH (a:Article {title: $title}), (e:Entity {entity_id: $entity_id}) \
-                 CREATE (a)-[:HAS_ENTITY]->(e)",
+                CREATE_HAS_ENTITY_CYPHER,
                 vec![
                     ("title", Value::String(record.id.clone())),
                     ("entity_id", Value::String(entity.entity_id.clone())),
@@ -582,8 +596,7 @@ fn load_record(
     if with_relations {
         for rel in &record.relations {
             conn.run_params(
-                "MATCH (s:Entity {entity_id: $source_id}), (t:Entity {entity_id: $target_id}) \
-                 CREATE (s)-[:ENTITY_RELATION {relation: $relation, context: $context}]->(t)",
+                CREATE_ENTITY_RELATION_CYPHER,
                 vec![
                     ("source_id", Value::String(rel.source_id.clone())),
                     ("target_id", Value::String(rel.target_id.clone())),

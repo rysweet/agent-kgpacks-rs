@@ -142,3 +142,13 @@ before delegating to the bulk loader, replacing the previous per-row
 `ENTITY_RELATION` remains **default-skipped** in the CVE builder — it is built only
 under `--with-entity-relations`. No read path depends on it: entity-graph traversal
 falls back to co-occurrence when there are no relation edges.
+
+When `--with-entity-relations` **is** set, the resumable/pipelined CVE builder
+(`kgpacks_packs::cve_build`) creates each `ENTITY_RELATION` (and every `HAS_ENTITY`)
+edge with the same PK-indexed shape — two separate `MATCH` clauses that point-look-up
+each endpoint by primary key (`kgpacks_packs::CREATE_ENTITY_RELATION_CYPHER` and
+`kgpacks_packs::CREATE_HAS_ENTITY_CYPHER`), **never** the comma two-pattern
+`MATCH (s ..), (t ..)`. A missing endpoint is silently skipped by `MATCH`, so the
+builder can stream relations whose endpoints span records without pre-filtering. The
+[linear-scaling guard](../crates/kgpacks-packs/tests/linear_scaling_guard.rs) pins
+this at both edge Cyphers' definition sites.
