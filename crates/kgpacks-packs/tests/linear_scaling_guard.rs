@@ -1,14 +1,22 @@
 //! WS5 — linear-scaling guard for the pack streaming loader.
 //!
-//! Structural (not timing) guard over [`kgpacks_packs::plan_load_statements`]:
+//! Structural (not timing) guard over the pack loaders:
 //!
-//! 1. Loading 2N records issues at most a small constant factor (≤ 3×) more DB
-//!    statements than loading N — i.e. the loader is linear, never O(N²).
+//! 1. Loading 2N records via [`kgpacks_packs::plan_load_statements`] issues at
+//!    most a small constant factor (≤ 3×) more DB statements than loading N —
+//!    i.e. the loader is linear, never O(N²).
 //! 2. No edge-creation statement uses the O(N²) comma two-pattern
 //!    `MATCH (a {..}), (b {..})`; edges are created with PK-indexed
-//!    single-`MATCH` clauses.
+//!    single-`MATCH` clauses. This covers **both** load paths: the M2
+//!    [`plan_load_statements`] planner AND the WS6 pipelined CVE builder
+//!    ([`kgpacks_packs::cve_build`]'s `load_record`), whose `HAS_ENTITY` and
+//!    `--with-entity-relations` `ENTITY_RELATION` edges are the
+//!    scale-sensitive path WS8 targets on the 343k-record CVE corpus.
 
-use kgpacks_packs::{plan_load_statements, Article, Entity, PackContent, CREATE_HAS_ENTITY_CYPHER};
+use kgpacks_packs::{
+    plan_load_statements, Article, Entity, PackContent, CREATE_ENTITY_RELATION_CYPHER,
+    CREATE_HAS_ENTITY_CYPHER,
+};
 
 /// Synthetic content with `n` articles, `n` entities and `n` `HAS_ENTITY` edges.
 fn content_with(n: usize) -> PackContent {
@@ -101,5 +109,39 @@ fn edge_creation_uses_pk_indexed_single_match() {
     assert_eq!(edge_statements.len(), 3);
     for stmt in edge_statements {
         assert_eq!(stmt.cypher, CREATE_HAS_ENTITY_CYPHER);
+    }
+}
+
+/// The WS6 pipelined CVE builder (`cve_build::load_record`) issues its edges from
+/// two named constants rather than the planner: it reuses
+/// [`CREATE_HAS_ENTITY_CYPHER`] for `HAS_ENTITY` and [`CREATE_ENTITY_RELATION_CYPHER`]
+/// for the `--with-entity-relations` `ENTITY_RELATION` edge. Both must keep the
+/// PK-indexed single-`MATCH` shape (never the O(N²) comma two-pattern), so this
+/// pins them at their definition site — the same guarantee WS8 makes for the
+/// scalable relation load, extended to the production CVE build path.
+#[test]
+fn cve_builder_edge_cyphers_use_pk_indexed_single_match() {
+    for (label, cypher, edge) in [
+        ("HAS_ENTITY", CREATE_HAS_ENTITY_CYPHER, "[:HAS_ENTITY]"),
+        (
+            "ENTITY_RELATION",
+            CREATE_ENTITY_RELATION_CYPHER,
+            "[:ENTITY_RELATION",
+        ),
+    ] {
+        assert!(
+            !has_comma_two_pattern(cypher),
+            "{label} CVE-builder edge Cypher uses the O(N^2) comma two-pattern; \
+             rewrite it with PK-indexed single-MATCH clauses:\n{cypher}"
+        );
+        assert_eq!(
+            cypher.matches("MATCH ").count(),
+            2,
+            "{label} CVE-builder edge Cypher must use two PK-indexed MATCH clauses:\n{cypher}"
+        );
+        assert!(
+            cypher.contains("CREATE ") && cypher.contains(edge),
+            "{label} CVE-builder edge Cypher must create the {label} edge:\n{cypher}"
+        );
     }
 }

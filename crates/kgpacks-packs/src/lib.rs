@@ -89,8 +89,8 @@ pub use checkpoint::{checkpoint_path_for, BuildCheckpoint, BuildCounts, CHECKPOI
 pub use corpus::{CorpusSource, CveEntity, CveRecord, CveRelation, FixtureCorpus};
 
 pub use cve_build::{
-    build_cve_pack, cve_schema_ddl, BuildParams, CveBuildReport, PipelineOptions, CVE_CATEGORY,
-    DEFAULT_BATCH_SIZE, DEFAULT_QUEUE_CAPACITY,
+    build_cve_pack, cve_schema_ddl, BuildParams, CveBuildReport, PipelineOptions,
+    CREATE_ENTITY_RELATION_CYPHER, CVE_CATEGORY, DEFAULT_BATCH_SIZE, DEFAULT_QUEUE_CAPACITY,
 };
 
 /// A stable content fingerprint (SHA-256 hex) of `bytes`.
