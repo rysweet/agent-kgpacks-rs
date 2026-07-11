@@ -4,6 +4,12 @@
 # Backtraces
 rustc-ice-*.txt
 
+# QA runner artifacts
+/logs/
+/outputs/
+/reports/
+/.qa-tmp/
+
 # Editor / OS noise
 *.swp
 .DS_Store
