@@ -240,6 +240,28 @@ fn validate_manifest_deep_sanitizes_dangerous_keys_inside_provenance() {
 }
 
 #[test]
+fn save_then_load_preserves_provenance_serialization() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let value = json!({
+        "name": "cve",
+        "version": "2025.6.0",
+        "provenance": {
+            "corpus": { "name": "cvelistV5", "commit": "abc123", "date": null },
+            "embedding": { "model": "Xenova/bge-base-en-v1.5", "dimensions": 768 },
+            "build": { "date": "2026-01-02T00:00:00Z", "tool_version": "agent-kgpacks-rs@0.1.0" }
+        }
+    });
+    let manifest = validate_manifest(&value).expect("valid provenance");
+
+    let path = manifest_path_in(dir.path());
+    save_manifest(&path, &manifest).expect("save");
+    let raw = std::fs::read_to_string(&path).expect("read");
+    let saved: Value = serde_json::from_str(&raw).expect("parse saved manifest");
+    assert_eq!(saved["provenance"], value["provenance"]);
+    assert_eq!(load_manifest(&path).expect("load"), manifest);
+}
+
+#[test]
 fn validate_manifest_strips_dangerous_keys() {
     let value =
         serde_json::from_str(r#"{"name":"safe","version":"1.0.0","__proto__":{"polluted":true}}"#)
