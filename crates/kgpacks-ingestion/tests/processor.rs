@@ -164,6 +164,206 @@ fn loads_llm_extraction_when_an_extractor_is_attached() {
 }
 
 #[test]
+fn reprocessing_replaces_entity_relations_without_duplicates() {
+    let db = store();
+    let conn = db.connect().unwrap();
+    let source = MapContentSource::new().with_article(rust_article());
+    let embedder = Embedder::bge();
+
+    let first_extractor = MockExtractor::new(ExtractionResult {
+        entities: vec![
+            Entity {
+                name: "Rust".to_string(),
+                type_: "concept".to_string(),
+                properties: BTreeMap::new(),
+            },
+            Entity {
+                name: "Cargo".to_string(),
+                type_: "tool".to_string(),
+                properties: BTreeMap::new(),
+            },
+        ],
+        relationships: vec![Relationship {
+            source: "Rust".to_string(),
+            relation: "uses".to_string(),
+            target: "Cargo".to_string(),
+            context: "Rust uses Cargo".to_string(),
+        }],
+        key_facts: vec![],
+    });
+    assert!(
+        ArticleProcessor::new(&conn, &source, &embedder)
+            .with_extractor(&first_extractor)
+            .process_article("Rust", "Programming", 0)
+            .success
+    );
+
+    let second_extractor = MockExtractor::new(ExtractionResult {
+        entities: vec![
+            Entity {
+                name: "Rust".to_string(),
+                type_: "concept".to_string(),
+                properties: BTreeMap::new(),
+            },
+            Entity {
+                name: "Cargo".to_string(),
+                type_: "tool".to_string(),
+                properties: BTreeMap::new(),
+            },
+        ],
+        relationships: vec![Relationship {
+            source: "Cargo".to_string(),
+            relation: "requires".to_string(),
+            target: "Rust".to_string(),
+            context: "Cargo requires Rust".to_string(),
+        }],
+        key_facts: vec![],
+    });
+    assert!(
+        ArticleProcessor::new(&conn, &source, &embedder)
+            .with_extractor(&second_extractor)
+            .process_article("Rust", "Programming", 0)
+            .success
+    );
+
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (:Entity)-[r:ENTITY_RELATION]->(:Entity) RETURN COUNT(r) AS n"
+        ),
+        1
+    );
+    let rows = conn
+        .run("MATCH (:Entity)-[r:ENTITY_RELATION]->(:Entity) RETURN r.relation AS relation")
+        .unwrap();
+    assert!(
+        matches!(rows[0].get("relation"), Some(Value::String(relation)) if relation == "requires")
+    );
+}
+
+#[test]
+fn relation_load_failure_is_reported_without_partial_writes() {
+    let db = store();
+    let conn = db.connect().unwrap();
+    let source = MapContentSource::new().with_article(rust_article());
+    let embedder = Embedder::bge();
+    let extractor = MockExtractor::new(ExtractionResult {
+        entities: vec![
+            Entity {
+                name: "Rust".to_string(),
+                type_: "concept".to_string(),
+                properties: BTreeMap::new(),
+            },
+            Entity {
+                name: "Cargo".to_string(),
+                type_: "tool".to_string(),
+                properties: BTreeMap::new(),
+            },
+        ],
+        relationships: vec![
+            Relationship {
+                source: "Rust".to_string(),
+                relation: "uses".to_string(),
+                target: "Cargo".to_string(),
+                context: "Rust uses Cargo".to_string(),
+            },
+            Relationship {
+                source: "Rust".to_string(),
+                relation: "uses".to_string(),
+                target: "MissingTarget".to_string(),
+                context: "Rust uses a missing target".to_string(),
+            },
+        ],
+        key_facts: vec![],
+    });
+
+    let outcome = ArticleProcessor::new(&conn, &source, &embedder)
+        .with_extractor(&extractor)
+        .process_article("Rust", "Programming", 0);
+
+    assert!(!outcome.success);
+    assert!(outcome
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("Processing error"));
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (:Entity)-[r:ENTITY_RELATION]->(:Entity) RETURN COUNT(r) AS n"
+        ),
+        0
+    );
+}
+
+#[test]
+fn relation_load_failure_preserves_existing_relations_on_reprocess() {
+    let db = store();
+    let conn = db.connect().unwrap();
+    let source = MapContentSource::new().with_article(rust_article());
+    let embedder = Embedder::bge();
+
+    let valid = MockExtractor::new(ExtractionResult {
+        entities: vec![
+            Entity {
+                name: "Rust".to_string(),
+                type_: "concept".to_string(),
+                properties: BTreeMap::new(),
+            },
+            Entity {
+                name: "Cargo".to_string(),
+                type_: "tool".to_string(),
+                properties: BTreeMap::new(),
+            },
+        ],
+        relationships: vec![Relationship {
+            source: "Rust".to_string(),
+            relation: "uses".to_string(),
+            target: "Cargo".to_string(),
+            context: "Rust uses Cargo".to_string(),
+        }],
+        key_facts: vec![],
+    });
+    assert!(
+        ArticleProcessor::new(&conn, &source, &embedder)
+            .with_extractor(&valid)
+            .process_article("Rust", "Programming", 0)
+            .success
+    );
+
+    let invalid = MockExtractor::new(ExtractionResult {
+        entities: vec![Entity {
+            name: "Rust".to_string(),
+            type_: "concept".to_string(),
+            properties: BTreeMap::new(),
+        }],
+        relationships: vec![Relationship {
+            source: "Rust".to_string(),
+            relation: "uses".to_string(),
+            target: "MissingTarget".to_string(),
+            context: "Rust uses a missing target".to_string(),
+        }],
+        key_facts: vec![],
+    });
+    let outcome = ArticleProcessor::new(&conn, &source, &embedder)
+        .with_extractor(&invalid)
+        .process_article("Rust", "Programming", 0);
+
+    assert!(!outcome.success);
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (:Entity)-[r:ENTITY_RELATION]->(:Entity) RETURN COUNT(r) AS n"
+        ),
+        1
+    );
+    let rows = conn
+        .run("MATCH (:Entity)-[r:ENTITY_RELATION]->(:Entity) RETURN r.relation AS relation")
+        .unwrap();
+    assert!(matches!(rows[0].get("relation"), Some(Value::String(relation)) if relation == "uses"));
+}
+
+#[test]
 fn not_found_article_reports_failure() {
     let db = store();
     let conn = db.connect().unwrap();

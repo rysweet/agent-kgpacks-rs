@@ -177,8 +177,7 @@ impl<'a, 'db> ArticleProcessor<'a, 'db> {
         let _ = self.replace_chunks(article, sections);
         self.replace_categories(article)?;
         if let Some(extraction) = extraction {
-            // LLM-extraction insertion is optional too — never fail the load on it.
-            let _ = self.replace_extraction(article, extraction);
+            self.replace_extraction(article, extraction)?;
         }
         Ok(())
     }
@@ -340,6 +339,16 @@ impl<'a, 'db> ArticleProcessor<'a, 'db> {
         article: &Article,
         extraction: &ExtractionResult,
     ) -> crate::error::Result<()> {
+        self.validate_extraction_relationship_endpoints(article, extraction)?;
+
+        self.conn.run_params(
+            "MATCH (a:Article {title: $title})-[:HAS_ENTITY]->(e:Entity)-[r:ENTITY_RELATION]->(:Entity) DELETE r",
+            vec![("title", Value::String(article.title.clone()))],
+        )?;
+        self.conn.run_params(
+            "MATCH (a:Article {title: $title})-[:HAS_ENTITY]->(e:Entity)<-[r:ENTITY_RELATION]-(:Entity) DELETE r",
+            vec![("title", Value::String(article.title.clone()))],
+        )?;
         self.conn.run_params(
             "MATCH (a:Article {title: $title})-[r:HAS_ENTITY]->(:Entity) DELETE r",
             vec![("title", Value::String(article.title.clone()))],
@@ -393,36 +402,44 @@ impl<'a, 'db> ArticleProcessor<'a, 'db> {
             )?;
         }
 
-        // Bulk-load ENTITY_RELATION edges scalably instead of one round-trip per
-        // edge. Filter to rows whose BOTH endpoints were just created as Entity
-        // nodes (both source and target names appear in this article's extracted
-        // entities). This reproduces the old per-row `MATCH (e1), (e2) CREATE`
-        // loop's "silently drop a dangling endpoint" behavior — while replacing
-        // that comma two-pattern MATCH (an O(N²) self-hash-join over the growing
-        // Entity table) with the non-O(N²) bulk path, and keeping the `COPY`
-        // route (which errors on a dangling foreign key) safe. See
-        // [`crate::bulk_create_entity_relations`].
-        let created_entity_ids: HashSet<String> = extraction
-            .entities
-            .iter()
-            .map(|e| format!("{}|{}", article.title, e.name))
-            .collect();
         let rel_rows: Vec<EntityRelationRow> = extraction
             .relationships
             .iter()
-            .filter_map(|rel| {
+            .map(|rel| {
                 let source_id = format!("{}|{}", article.title, rel.source);
                 let target_id = format!("{}|{}", article.title, rel.target);
-                (created_entity_ids.contains(&source_id) && created_entity_ids.contains(&target_id))
-                    .then_some(EntityRelationRow {
-                        source_id,
-                        target_id,
-                        relation: rel.relation.clone(),
-                        context: rel.context.clone(),
-                    })
+                EntityRelationRow {
+                    source_id,
+                    target_id,
+                    relation: rel.relation.clone(),
+                    context: rel.context.clone(),
+                }
             })
             .collect();
         crate::bulk_create_entity_relations(self.conn, &rel_rows)?;
+        Ok(())
+    }
+
+    fn validate_extraction_relationship_endpoints(
+        &self,
+        article: &Article,
+        extraction: &ExtractionResult,
+    ) -> crate::error::Result<()> {
+        let entity_names: HashSet<&str> = extraction
+            .entities
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
+        for rel in &extraction.relationships {
+            if !entity_names.contains(rel.source.as_str())
+                || !entity_names.contains(rel.target.as_str())
+            {
+                return Err(crate::error::IngestionError::EntityRelationLoad(format!(
+                    "relationship endpoint missing from extracted entities for article {}: {} -> {}",
+                    article.title, rel.source, rel.target
+                )));
+            }
+        }
         Ok(())
     }
 }

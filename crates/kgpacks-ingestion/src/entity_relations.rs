@@ -15,16 +15,14 @@
 //! fallback point-looks-up each endpoint by primary key with two separate `MATCH`
 //! clauses.
 //!
-//! The caller is responsible for pre-filtering to rows whose *both* endpoints
-//! already exist as `Entity` nodes (as the reference filters against its
-//! deduped-entity set): `COPY <Rel>` errors on a dangling foreign key, so a
-//! dangling row would abort the whole bulk import.
+//! Every row is preflighted before any edge is created. A dangling endpoint is a
+//! visible load error, not a silent partial success.
 
 use std::path::Path;
 
 use kgpacks_db::{Connection, LogicalType, Value};
 
-use crate::error::Result;
+use crate::error::{IngestionError, Result};
 
 /// Max rows per `UNWIND` statement in the fallback path (bounds the prepared
 /// statement's parameter size). Mirrors the reference `RELATION_FALLBACK_CHUNK`.
@@ -53,8 +51,7 @@ pub struct EntityRelationRow {
 /// PK-indexed `UNWIND … MATCH … MATCH … CREATE` batches. Returns the number of
 /// edges created (COPY: the full row count; fallback: the sum of batch sizes).
 ///
-/// An empty input is a no-op returning `0`. See the module docs for the caller's
-/// pre-filtering obligation.
+/// An empty input is a no-op returning `0`.
 pub fn bulk_create_entity_relations(
     conn: &Connection<'_>,
     rows: &[EntityRelationRow],
@@ -62,6 +59,7 @@ pub fn bulk_create_entity_relations(
     if rows.is_empty() {
         return Ok(0);
     }
+    validate_all_endpoints(conn, rows)?;
     match copy_entity_relations(conn, rows) {
         Ok(created) => Ok(created),
         // COPY unsupported/rejected → PK-indexed UNWIND fallback (still ~linear).
@@ -118,26 +116,67 @@ fn csv_field(value: &str) -> String {
 /// binds a `LIST<STRUCT>` of `{s, t, rel, ctx}` rows and creates one edge per row,
 /// point-looking-up each endpoint by primary key with **two separate** `MATCH`
 /// clauses — never a comma two-pattern `MATCH` — so the load stays ~linear. A row
-/// whose endpoint is missing is silently skipped by `MATCH` (parity with the naive
-/// loop it replaces), so this path is robust to a dangling endpoint that `COPY`
-/// would reject. The returned count is the number of rows *submitted* (summed
-/// batch sizes), which may exceed the edges actually created when rows are skipped.
+/// whose endpoint is missing is rejected before any write. The returned count is
+/// the number of edges actually created.
 pub fn create_entity_relations_batched(
     conn: &Connection<'_>,
     rows: &[EntityRelationRow],
 ) -> Result<usize> {
+    validate_all_endpoints(conn, rows)?;
     let mut created = 0;
     for chunk in rows.chunks(RELATION_FALLBACK_CHUNK) {
-        conn.run_params(
+        let result = conn.run_params(
             "UNWIND $rows AS r \
              MATCH (a:Entity {entity_id: r.s}) \
              MATCH (b:Entity {entity_id: r.t}) \
-             CREATE (a)-[:ENTITY_RELATION {relation: r.rel, context: r.ctx}]->(b)",
+             CREATE (a)-[created:ENTITY_RELATION {relation: r.rel, context: r.ctx}]->(b) \
+             RETURN count(created) AS created",
             vec![("rows", rows_param(chunk))],
         )?;
-        created += chunk.len();
+        let batch_created = count_to_usize(result.first().and_then(|r| r.get("created")));
+        if batch_created != chunk.len() {
+            return Err(IngestionError::EntityRelationLoad(format!(
+                "created {batch_created} of {} requested relationship(s)",
+                chunk.len()
+            )));
+        }
+        created += batch_created;
     }
     Ok(created)
+}
+
+fn validate_all_endpoints(conn: &Connection<'_>, rows: &[EntityRelationRow]) -> Result<()> {
+    for chunk in rows.chunks(RELATION_FALLBACK_CHUNK) {
+        let result = conn.run_params(
+            "UNWIND $rows AS r \
+             MATCH (a:Entity {entity_id: r.s}) \
+             MATCH (b:Entity {entity_id: r.t}) \
+             RETURN count(a) AS matched",
+            vec![("rows", rows_param(chunk))],
+        )?;
+        let matched = count_to_usize(result.first().and_then(|r| r.get("matched")));
+        if matched != chunk.len() {
+            return Err(IngestionError::EntityRelationLoad(format!(
+                "matched {matched} of {} requested relationship endpoint pair(s)",
+                chunk.len()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn count_to_usize(value: Option<&Value>) -> usize {
+    match value {
+        Some(Value::Int64(n)) => (*n).max(0) as usize,
+        Some(Value::Int32(n)) => (*n).max(0) as usize,
+        Some(Value::Int16(n)) => (*n).max(0) as usize,
+        Some(Value::Int8(n)) => (*n).max(0) as usize,
+        Some(Value::UInt64(n)) => *n as usize,
+        Some(Value::UInt32(n)) => *n as usize,
+        Some(Value::UInt16(n)) => *n as usize,
+        Some(Value::UInt8(n)) => *n as usize,
+        _ => 0,
+    }
 }
 
 /// Build the `LIST<STRUCT<s, t, rel, ctx: STRING>>` bound parameter for an

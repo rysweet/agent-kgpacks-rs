@@ -153,13 +153,31 @@ fn batched_unwind_path_creates_edges_directly() {
 }
 
 #[test]
-fn batched_unwind_path_skips_dangling_endpoints() {
-    // A row referencing a non-existent endpoint is silently skipped by MATCH
-    // (only the valid edge is created), so the loader is robust to dangling rows.
+fn batched_unwind_path_rejects_dangling_endpoints_without_partial_writes() {
     let db = Database::in_memory().unwrap();
     let conn = db.connect().unwrap();
     setup(&conn, &["a", "b"]);
     let rows = vec![row("a", "b", "knows", ""), row("a", "missing", "knows", "")];
-    create_entity_relations_batched(&conn, &rows).unwrap();
-    assert_eq!(rel_count(&conn), 1);
+    let err = create_entity_relations_batched(&conn, &rows).unwrap_err();
+    assert!(err.to_string().contains("entity relation load failed"));
+    assert_eq!(rel_count(&conn), 0);
+}
+
+#[test]
+fn bulk_load_rejects_cross_batch_dangling_endpoint_without_partial_writes() {
+    let db = Database::in_memory().unwrap();
+    let conn = db.connect().unwrap();
+    let n = 1_001usize;
+    let ids: Vec<String> = (0..n).map(|i| format!("e{i:04}")).collect();
+    let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+    setup(&conn, &id_refs);
+
+    let mut rows: Vec<EntityRelationRow> = (0..1_000)
+        .map(|i| row(&ids[i], &ids[i + 1], "next", ""))
+        .collect();
+    rows.push(row(&ids[0], "missing", "broken", ""));
+
+    let err = bulk_create_entity_relations(&conn, &rows).unwrap_err();
+    assert!(err.to_string().contains("entity relation load failed"));
+    assert_eq!(rel_count(&conn), 0);
 }
