@@ -1,0 +1,29 @@
+name: WS3 release plan derives version
+description: Verifies pack release-plan derives an unpadded cve-YYYY.MM SemVer version and keeps the packs latest pointer.
+config:
+  timeout: 300000
+environment:
+  requires: []
+agents:
+  - name: cli
+    type: cli
+    config:
+      workingDirectory: ./
+steps:
+  - name: derive cve release plan
+    action: run
+    params:
+      command: bash
+      args: ["scenarios/ws3-release-plan.sh"]
+    timeout: 300000
+  - name: output has derived unpadded SemVer version
+    action: validate_output
+    params:
+      text: "contains:2025.6.0"
+  - name: output keeps latest packs pointer
+    action: validate_output
+    params:
+      text: "contains:packs"
+metadata:
+  tags: [cli, ws3, release]
+  priority: high

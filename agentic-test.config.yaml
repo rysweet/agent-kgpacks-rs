@@ -1,0 +1,27 @@
+execution:
+  maxParallel: 1
+  defaultTimeout: 300000
+  continueOnFailure: false
+  maxRetries: 0
+  retryDelay: 1000
+
+cli:
+  workingDirectory: ./
+  defaultTimeout: 300000
+  executionMode: exec
+  maxBufferSize: 10485760
+  environment: {}
+  retryConfig:
+    maxRetries: 0
+    retryDelay: 1000
+  ioConfig:
+    encoding: utf8
+    autoResponses: {}
+
+logging:
+  level: info
+  console: true
+
+reporting:
+  outputDir: ./reports
+  formats: [json]
