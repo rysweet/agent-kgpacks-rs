@@ -132,11 +132,11 @@ let rows = vec![
 let created = bulk_create_entity_relations(&conn, &rows)?;
 ```
 
-The caller pre-filters to rows whose **both** endpoints already exist as `Entity`
-nodes: `COPY <Rel>` errors on a dangling foreign key, so a dangling row would abort
-the whole import. The single-article `ArticleProcessor` load path does exactly this
-(it filters each article's relationships against the entities it just created)
-before delegating to the bulk loader, replacing the previous per-row
+The bulk loader preflights **all** endpoint pairs before creating any edge. A
+dangling source or target is a visible `EntityRelationLoad` error, not a silent
+skip or partial success. The single-article `ArticleProcessor` path propagates
+that error so `--with-entity-relations` cannot report success while relation
+edges are missing. This replaces the previous per-row
 `MATCH (e1), (e2) CREATE` loop.
 
 `ENTITY_RELATION` remains **default-skipped** in the CVE builder — it is built only
@@ -148,7 +148,8 @@ When `--with-entity-relations` **is** set, the resumable/pipelined CVE builder
 edge with the same PK-indexed shape — two separate `MATCH` clauses that point-look-up
 each endpoint by primary key (`kgpacks_packs::CREATE_ENTITY_RELATION_CYPHER` and
 `kgpacks_packs::CREATE_HAS_ENTITY_CYPHER`), **never** the comma two-pattern
-`MATCH (s ..), (t ..)`. A missing endpoint is silently skipped by `MATCH`, so the
-builder can stream relations whose endpoints span records without pre-filtering. The
+`MATCH (s ..), (t ..)`. The bulk loader used by ingestion fails closed when
+endpoints are missing; the CVE builder's streaming path continues to use
+PK-indexed writes for resumability across records. The
 [linear-scaling guard](../crates/kgpacks-packs/tests/linear_scaling_guard.rs) pins
 this at both edge Cyphers' definition sites.

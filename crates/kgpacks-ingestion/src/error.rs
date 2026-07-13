@@ -30,6 +30,10 @@ pub enum IngestionError {
     /// An I/O error while staging a bulk-load CSV for `COPY ENTITY_RELATION`.
     #[error(transparent)]
     Io(#[from] std::io::Error),
+
+    /// Entity relationship persistence did not create every requested edge.
+    #[error("entity relation load failed: {0}")]
+    EntityRelationLoad(String),
 }
 
 /// Convenience result alias for fallible ingestion operations.
