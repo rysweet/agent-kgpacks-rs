@@ -55,6 +55,17 @@ pub fn pack_release_filename(pack: &str) -> String {
     format!("{pack}.pack-release.json")
 }
 
+/// The `<name>.tar.gz.NNN` filename for the `index`-th part of a multi-part pack
+/// release (zero-based, 3-digit zero-padded ordinal — matches `release-pack.mjs`
+/// and the `<name>.tar.gz.000` / `.001` reference layout).
+///
+/// This is the single source of the part-file naming, shared by the planner's
+/// [`MultiPartIndex::to_release_parts`] and the pull-facing [`ReleasePart`], so
+/// the two representations cannot disagree on part filenames.
+pub fn pack_part_filename(pack: &str, index: u64) -> String {
+    format!("{pack}.tar.gz.{index:03}")
+}
+
 /// The ordered set of tags a pack release publishes to.
 ///
 /// Ports `release-pack.mjs`'s `publishTo(tag); if (tag !== 'packs') publishTo('packs')`:
@@ -655,10 +666,15 @@ pub struct MultiPartIndex {
 }
 
 impl MultiPartIndex {
-    /// Serialize to the canonical `<name>.pack-release.json` multi-part shape.
+    /// Serialize to the planner's structural multi-part shape (snake_case keys,
+    /// `parts` carrying their 0-based `index`).
     ///
-    /// This is the exact structure `pack pull` verifies against; the planner
-    /// and the pull-side reader share it so the format cannot drift.
+    /// NOTE: this is the *planner's* accounting projection, **not** the on-disk
+    /// `<name>.pack-release.json` that `pack pull` reads — that canonical index
+    /// is [`PackReleaseIndex`] (camelCase `partSize`/`totalBytes`, parts keyed by
+    /// `file`). The two are kept from drifting by [`Self::to_release_parts`],
+    /// which maps this planner's per-part accounting onto the pull-facing
+    /// [`ReleasePart`]s, so the same byte-split feeds both representations.
     pub fn to_value(&self) -> serde_json::Value {
         serde_json::json!({
             "part_size": self.part_size,
@@ -674,6 +690,25 @@ impl MultiPartIndex {
                 }))
                 .collect::<Vec<_>>(),
         })
+    }
+
+    /// Project the planner's parts onto the pull-facing [`ReleasePart`] list for
+    /// pack `pack`, assigning each its `<pack>.tar.gz.NNN` filename
+    /// ([`pack_part_filename`]) while preserving its byte length and SHA-256.
+    ///
+    /// This is the bridge that makes [`plan_multipart_release`] the single source
+    /// of the byte-split feeding the real [`PackReleaseIndex`] (via
+    /// [`build_release_index`]) that `pack pull` verifies — so the planner's
+    /// accounting and the on-disk release index cannot drift apart.
+    pub fn to_release_parts(&self, pack: &str) -> Vec<ReleasePart> {
+        self.parts
+            .iter()
+            .map(|p| ReleasePart {
+                file: pack_part_filename(pack, p.index),
+                bytes: p.bytes,
+                sha256: p.sha256.clone(),
+            })
+            .collect()
     }
 }
 

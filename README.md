@@ -279,14 +279,23 @@ semantics over the same fixtures.
 Packs larger than
 [`MAX_SINGLE_ARTIFACT_BYTES`](crates/kgpacks-packs/src/release.rs) (2 GiB) are
 published as an ordered set of fixed-size parts. `plan_multipart_release` is the
-release tool's split/accounting step run **dry** (it computes the index a
-`pack pull` re-verifies; it publishes nothing): every non-final part is exactly
-`part_size`, `sum(parts.bytes) == total_bytes`, each part carries the SHA-256 of
-its own bytes, and the index carries the SHA-256 of the whole artifact. Size
-accounting (`part_accounting`) is pure `u64` arithmetic, so the >2 GiB path is
-covered without materializing gigabytes. Hashing uses a self-contained SHA-256
+release tool's split/accounting step run **dry** (it computes the per-part
+byte-split; it publishes nothing): every non-final part is exactly `part_size`,
+`sum(parts.bytes) == total_bytes`, each part carries the SHA-256 of its own
+bytes, and the index carries the SHA-256 of the whole artifact. Size accounting
+(`part_accounting`) is pure `u64` arithmetic, so the >2 GiB path is covered
+without materializing gigabytes. Hashing uses a self-contained SHA-256
 ([`kgpacks-packs::sha256`](crates/kgpacks-packs/src/sha256.rs)) — no external
 crypto dependency.
+
+That same byte-split feeds the on-disk `<name>.pack-release.json` a `pack pull`
+actually reads: `MultiPartIndex::to_release_parts` projects the planner's parts
+onto the pull-facing [`PackReleaseIndex`](crates/kgpacks-packs/src/release.rs)
+(each part named `<name>.tar.gz.NNN` via `pack_part_filename`), so the planner's
+accounting and the published index **cannot drift** — a CI guard
+(`planner_parts_match_the_pull_facing_release_index`) round-trips the real index
+through its validation path and asserts every part's filename, byte length and
+SHA-256, plus `part_size`, `total_bytes` and the overall digest, agree.
 
 ```rust
 use kgpacks_packs::{plan_multipart_release, part_accounting, requires_multipart};
