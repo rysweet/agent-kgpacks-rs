@@ -9,6 +9,11 @@
 #     incompressible bytes (every non-final part == part_size,
 #     sum(parts) == total, per-part + overall SHA-256, byte-exact reassembly)
 #     and the >2 GiB size accounting computed without materializing gigabytes.
+#     It also asserts the planner's byte-split cannot drift from the on-disk
+#     `<name>.pack-release.json` a `pack pull` reads: the planner parts are
+#     projected onto the real `PackReleaseIndex`, round-tripped through its
+#     validation path, and every part filename/bytes/SHA-256 plus part_size,
+#     total_bytes and the overall digest are asserted to agree.
 #
 #   * Linear-scaling loader guard (structural, not timing) in both
 #     kgpacks-packs and kgpacks-ingestion `tests/linear_scaling_guard.rs`:

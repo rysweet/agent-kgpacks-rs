@@ -64,9 +64,9 @@ pub use versioning::{
 
 pub use release::{
     build_release_index, build_release_provenance, iso8601_utc_from_unix, latest_release_tag,
-    now_iso8601_utc, pack_release_filename, plan_release, publish_targets, resolve_model,
-    resolve_release_version, PackReleaseIndex, ProvenanceOverrides, ReleasePart, ReleasePlan,
-    LATEST_POINTER_TAG, RELEASE_INDEX_FORMAT,
+    now_iso8601_utc, pack_part_filename, pack_release_filename, plan_release, publish_targets,
+    resolve_model, resolve_release_version, PackReleaseIndex, ProvenanceOverrides, ReleasePart,
+    ReleasePlan, LATEST_POINTER_TAG, RELEASE_INDEX_FORMAT,
 };
 
 pub use pack::{
